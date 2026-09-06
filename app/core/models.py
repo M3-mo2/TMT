@@ -82,7 +82,9 @@ class Job:
 
     id: int
     owner_id: int
-    account_id: int
+    # NULL once the account is deleted (migration v2: ON DELETE SET NULL) —
+    # job history is kept for statistics (PRD §20) without the account row.
+    account_id: int | None
     source_ref: str
     dest_ref: str
     source_title: str = ""

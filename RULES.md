@@ -9,7 +9,9 @@ regressions, and behavior breaks. They are concrete, not aspirational.
 - `tg/` (Telethon) must not import `aiogram` or `db/`. The transfer engine and
   preflight receive everything they need as parameters. `tg.errors` may be imported
   by anyone (it is the shared vocabulary of failure).
-- `db/` must not import `bot/`, `tg/`, or `core/`.
+- `db/` must not import `bot/`, `tg/`, or any service module (`core` services,
+  `db` may not import them). Exception: `app/core/models.py` is the shared domain
+  vocabulary — every layer may import it; it must stay dependency-free.
 - Handler functions are thin: parse input → call a service → render text. Any
   `if/elif` business decision longer than 3 lines belongs in `core/` or `tg/`, not in
   a handler.

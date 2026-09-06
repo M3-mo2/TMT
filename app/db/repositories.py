@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from app.core.models import (
+    FINAL_JOB_STATUSES,
     Account,
     AccountStatus,
     Job,
@@ -169,6 +170,24 @@ async def delete_account(db: Database, owner_id: int, account_id: int) -> bool:
     return cur.rowcount > 0
 
 
+async def delete_account_with_audit(db: Database, owner_id: int, account_id: int) -> bool:
+    """Delete an account and write its audit entry in one transaction.
+
+    Job history survives the deletion: since migration v2 jobs.account_id is
+    nullable with ON DELETE SET NULL, so existing job rows keep their
+    statistics with a NULL account link (PRD §20)."""
+    async with db.tx() as conn:
+        cur = await conn.execute(
+            "DELETE FROM accounts WHERE id=? AND owner_id=?", (account_id, owner_id)
+        )
+        if cur.rowcount == 0:
+            return False
+        await audit(
+            db, "account_removed", owner_id=owner_id, account_id=account_id, conn=conn,
+        )
+        return True
+
+
 # ---------------------------------------------------------------- jobs
 
 
@@ -257,10 +276,17 @@ async def transition_job(
     if finished:
         sets.append("finished_at=?")
         params.append(now_iso())
-    params.extend([s.value for s in from_statuses])
+    # Placeholder order in the SQL is: SET columns, then id=?, then the
+    # status IN (...) list — parameters must follow that exact order.
+    # Final states are write-once (RULES §5): a job in a final state never
+    # leaves it, even if a caller lists a final status in from_statuses.
+    final_list = ",".join("?" * len(FINAL_JOB_STATUSES))
     params.append(job_id)
+    params.extend(s.value for s in from_statuses)
+    params.extend(sorted(s.value for s in FINAL_JOB_STATUSES))
     cur = await db.conn.execute(
-        f"UPDATE jobs SET {', '.join(sets)} WHERE id=? AND status IN ({from_list})",
+        f"UPDATE jobs SET {', '.join(sets)} "
+        f"WHERE id=? AND status IN ({from_list}) AND status NOT IN ({final_list})",
         params,
     )
     return cur.rowcount > 0
@@ -355,8 +381,12 @@ async def audit(
     account_id: int | None = None,
     job_id: int | None = None,
     detail: dict[str, Any] | None = None,
+    conn: Any | None = None,
 ) -> None:
-    await db.execute(
+    """Append an audit row; pass ``conn`` to participate in an open
+    transaction instead of autocommitting."""
+    executor = conn if conn is not None else db
+    await executor.execute(
         "INSERT INTO audit_log (ts, owner_id, account_id, job_id, event, detail) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (

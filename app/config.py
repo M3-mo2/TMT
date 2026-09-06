@@ -34,6 +34,7 @@ class Config(BaseSettings):
     invite_delay_seconds: float = Field(default=2.0, ge=0)
     invite_delay_jitter_seconds: float = Field(default=1.0, ge=0)
     flood_wait_max_seconds: int = Field(default=900, ge=1)
+    peer_flood_cooldown_seconds: int = Field(default=3600, ge=0)
     job_timeout_seconds: int = Field(default=4 * 3600, ge=60)
     login_ttl_seconds: int = Field(default=600, ge=60)
     progress_edit_min_interval: float = Field(default=4.0, ge=1)
