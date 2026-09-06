@@ -72,6 +72,47 @@ async def test_is_user_blocked(db: Database) -> None:
     assert not await repo.is_user_blocked(db, 999)  # unknown user
 
 
+async def test_upsert_user_stores_and_preserves_names(db: Database) -> None:
+    await repo.upsert_user(db, 1, first_name="سارة", last_name="محمد", username="sarah")
+    # a name-less re-upsert (e.g. account_service save_login) must not clobber them
+    await repo.upsert_user(db, 1)
+    row = await repo.get_user(db, 1)
+    assert row is not None
+    assert row["first_name"] == "سارة"
+    assert row["last_name"] == "محمد"
+    assert row["username"] == "sarah"
+
+
+async def test_get_user_returns_none_for_missing(db: Database) -> None:
+    assert await repo.get_user(db, 999) is None
+
+
+async def test_set_user_blocked_toggles(db: Database) -> None:
+    await add_user(db, 1)
+    await repo.set_user_blocked(db, 1, True)
+    assert (await repo.get_user(db, 1))["is_blocked"] == 1
+    await repo.set_user_blocked(db, 1, False)
+    assert (await repo.get_user(db, 1))["is_blocked"] == 0
+
+
+async def test_user_job_stats_are_scoped_to_owner(db: Database) -> None:
+    await add_user(db, 1)
+    await add_user(db, 2)
+    a1 = await add_account(db, owner_id=1)
+    j1 = await add_job(db, owner_id=1, account_id=a1)
+    j2 = await add_job(db, owner_id=1, account_id=a1)
+    j3 = await add_job(db, owner_id=2, account_id=a1)
+    await force_status(db, j1, JobStatus.COMPLETED)
+    await force_status(db, j2, JobStatus.FAILED)
+    await force_status(db, j3, JobStatus.RUNNING)
+    assert await repo.count_accounts_for_user(db, 1) == 1
+    assert await repo.count_jobs_for_user(db, 1) == 2
+    assert await repo.count_completed_jobs_for_user(db, 1) == 1
+    assert await repo.count_failed_jobs_for_user(db, 1) == 1
+    assert await repo.count_active_jobs_for_user(db, 1) == 0
+    assert await repo.count_active_jobs_for_user(db, 2) == 1
+
+
 # ---------------------------------------------------------------- accounts
 
 

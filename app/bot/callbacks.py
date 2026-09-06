@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from aiogram.filters.callback_data import CallbackData
 
-__all__ = ["MenuCB", "AccountCB", "TransferCB", "JobCB"]
+__all__ = ["MenuCB", "AccountCB", "TransferCB", "JobCB", "SettingsCB"]
 
 
 class MenuCB(CallbackData, prefix="menu"):
@@ -28,3 +28,8 @@ class TransferCB(CallbackData, prefix="xfer"):
 class JobCB(CallbackData, prefix="job"):
     action: str  # "list" | "view" | "cancel"
     job_id: int = 0
+
+
+class SettingsCB(CallbackData, prefix="set"):
+    action: str  # "main" | "change" | "reset"
+    key: str = ""  # config key to change/reset

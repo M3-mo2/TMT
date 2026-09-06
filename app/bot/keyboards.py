@@ -5,7 +5,7 @@ from __future__ import annotations
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.bot.callbacks import AccountCB, JobCB, MenuCB, TransferCB
+from app.bot.callbacks import AccountCB, JobCB, MenuCB, SettingsCB, TransferCB
 from app.bot.texts import (
     BUT_ACCOUNTS,
     BUT_ADD_ACCOUNT,
@@ -17,6 +17,7 @@ from app.bot.texts import (
     BUT_JOBS,
     BUT_MAIN,
     BUT_REFRESH,
+    BUT_SETTINGS,
     BUT_START_TRANSFER,
     BUT_TRANSFER,
 )
@@ -35,6 +36,9 @@ __all__ = [
     "job_detail",
     "jobs_list",
     "jobs_list_back",
+    "help_back",
+    "settings_keyboard",
+    "settings_back",
 ]
 
 Row = list[InlineKeyboardButton]
@@ -48,8 +52,10 @@ def main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_btn(BUT_ACCOUNTS, MenuCB(action="accounts"))],
-            [_btn(BUT_TRANSFER, MenuCB(action="transfers"))],
-            [_btn(BUT_JOBS, MenuCB(action="jobs"))],
+            [
+                _btn(BUT_TRANSFER, MenuCB(action="transfers")),
+                _btn(BUT_JOBS, MenuCB(action="jobs")),
+            ],
             [_btn(BUT_HELP, MenuCB(action="help"))],
         ]
     )
@@ -138,4 +144,27 @@ def jobs_list(jobs: list) -> InlineKeyboardMarkup:
 def jobs_list_back() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[_btn(BUT_BACK, MenuCB(action="main"))]]
+    )
+
+
+def help_back() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[_btn(BUT_BACK, MenuCB(action="main"))]]
+    )
+
+
+def settings_keyboard() -> InlineKeyboardMarkup:
+    """Settings menu: one button per configurable key, plus back to main."""
+    from app.bot.texts import _SETTING_SPECS
+
+    rows: list[Row] = []
+    for key, (label, _unit) in _SETTING_SPECS.items():
+        rows.append([_btn(label, SettingsCB(action="change", key=key))])
+    rows.append([_btn(BUT_BACK, MenuCB(action="main"))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def settings_back() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[_btn(BUT_BACK, SettingsCB(action="main"))]]
     )

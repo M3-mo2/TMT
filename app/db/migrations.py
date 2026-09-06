@@ -113,9 +113,31 @@ CREATE INDEX idx_jobs_owner_status ON jobs(owner_id, status);
 CREATE INDEX idx_jobs_account_status ON jobs(account_id, status);
 """
 
+_V3 = """
+CREATE TABLE IF NOT EXISTS channels (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    invite_link TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1
+);
+"""
+
+# v4: capture the Telegram user's display name + username so the admin
+# panel can list users by name (not just by numeric id) and identify them.
+# Nullable for existing rows (names were never stored before → UI falls back
+# to the numeric id). Standard ALTER TABLE (portable to PostgreSQL, RULES §6).
+_V4 = """
+ALTER TABLE users ADD COLUMN first_name TEXT;
+ALTER TABLE users ADD COLUMN last_name TEXT;
+ALTER TABLE users ADD COLUMN username TEXT;
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
+    (3, _V3),
+    (4, _V4),
 ]
 
 

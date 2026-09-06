@@ -27,6 +27,7 @@ from app.core.models import (
     JobStatus,
     ResolvedEntity,
 )
+from app.core.settings import UserSettings
 from app.db import repositories as repo
 from app.db.database import Database
 from app.security.crypto import CryptoError, SessionCrypto
@@ -89,6 +90,7 @@ class JobManager:
         bus: EventBus,
         config: Config,
         engine: "TransferEngine",
+        settings: UserSettings | None = None,
         *,
         preflight_runner: PreflightRunner | None = None,
     ) -> None:
@@ -98,6 +100,7 @@ class JobManager:
         self._bus = bus
         self._config = config
         self._engine = engine
+        self._settings = settings
         # Injectable so tests stay offline; resolves lazily to the real
         # app.tg.preflight.run_preflight in production.
         self._preflight = preflight_runner or self._default_preflight
@@ -106,6 +109,15 @@ class JobManager:
         self._active_accounts: set[int] = set()
         self._account_lock = asyncio.Lock()
         self._capacity = asyncio.Semaphore(config.max_concurrent_jobs)
+
+    # ------------------------------------------------------------------ helpers
+
+    def _user_setting(self, owner_id: int, key: str) -> int:
+        """Return an overridable config value for *owner_id*, falling back
+        to the global Config default when no override is stored."""
+        if self._settings is not None:
+            return self._settings.get(owner_id, key)
+        return int(getattr(self._config, key))
 
     # ------------------------------------------------------------------ public
 
@@ -307,11 +319,11 @@ class JobManager:
                 params = TransferParams(
                     source=source,
                     dest=dest,
-                    max_members=self._config.max_members_per_job,
+                    max_members=self._user_setting(owner_id, "max_members_per_job"),
                     invite_delay=self._config.invite_delay_seconds,
                     invite_jitter=self._config.invite_delay_jitter_seconds,
-                    flood_wait_max=self._config.flood_wait_max_seconds,
-                    deadline=loop.time() + self._config.job_timeout_seconds,
+                    flood_wait_max=self._user_setting(owner_id, "flood_wait_max_seconds"),
+                    deadline=loop.time() + self._user_setting(owner_id, "job_timeout_seconds"),
                 )
                 result = await self._engine.run(
                     client, params, self._progress_callback(job_id, loop), cancel_event

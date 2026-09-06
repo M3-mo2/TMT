@@ -15,14 +15,19 @@ from app.db.migrations import _V1, _split_statements
 
 async def test_connect_applies_migrations(db: Database) -> None:
     rows = await db.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
-    assert [r["version"] for r in rows] == [1, 2]
+    assert [r["version"] for r in rows] == [1, 2, 3, 4]
     tables = {
         r["name"]
         for r in await db.fetch_all(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    assert {"users", "accounts", "jobs", "audit_log", "schema_migrations"} <= tables
+    assert {"users", "accounts", "jobs", "audit_log", "channels", "schema_migrations"} <= tables
+
+
+async def test_migration_v4_adds_user_name_columns(db: Database) -> None:
+    cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(users)")}
+    assert {"first_name", "last_name", "username"}.issubset(cols)
 
 
 async def test_reconnect_is_idempotent(tmp_path: Path) -> None:
@@ -35,7 +40,7 @@ async def test_reconnect_is_idempotent(tmp_path: Path) -> None:
     await db2.connect()
     try:
         rows = await db2.fetch_all("SELECT version FROM schema_migrations")
-        assert [r["version"] for r in rows] == [1, 2]
+        assert [r["version"] for r in rows] == [1, 2, 3, 4]
     finally:
         await db2.close()
 
@@ -149,7 +154,7 @@ async def test_v1_database_upgrades_to_v2_preserving_history(tmp_path: Path) -> 
     await db.connect()
     try:
         rows = await db.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
-        assert [r["version"] for r in rows] == [1, 2]
+        assert [r["version"] for r in rows] == [1, 2, 3, 4]
         job = await db.fetch_one(
             "SELECT account_id, status, invited FROM jobs WHERE id=9"
         )

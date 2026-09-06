@@ -115,6 +115,17 @@ class Account:
     last_validated_at: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class UserStats:
+    """Snapshot of a user's activity, surfaced on the admin user card."""
+
+    accounts: int
+    jobs: int
+    completed: int
+    failed: int
+    active: int
+
+
 # Standard skip-reason keys (counted per job, rendered in Arabic by bot layer).
 SKIP_BOT = "bot"
 SKIP_ALREADY_MEMBER = "already_member"

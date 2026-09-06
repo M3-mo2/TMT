@@ -89,7 +89,7 @@ async def test_throttle_edits_by_interval_but_phase_waits_are_immediate(config: 
 
     chat_id, message_id, text = bot.edits[-1]
     assert chat_id == 55 and message_id == 100
-    assert "تم: 9/100" in text
+    assert "9/100" in text
     assert "42" in bot.edits[1][2]  # the FloodWait countdown card
 
 
@@ -103,7 +103,7 @@ async def test_finished_edits_summary_and_unregisters(config: Config) -> None:
         JobFinishedEvent(job_id=1, status=JobStatus.COMPLETED, invited=9, skipped=2, failed=0, error=None)
     )
     assert len(bot.edits) == 1
-    assert "انتهت العملية" in bot.edits[0][2]
+    assert "✨|العمليه تمت" in bot.edits[0][2]
 
     # Later events for the finished job are ignored.
     await bus.publish(_progress(job_id=1))

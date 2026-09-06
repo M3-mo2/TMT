@@ -6,7 +6,6 @@ Included last so FSM-filtered routers match before the catch-all fallback.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from aiogram import Router, F
 from aiogram.filters import Command, CommandStart
@@ -14,14 +13,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from app.bot.callbacks import MenuCB
-from app.bot.keyboards import main_menu
+from app.bot.keyboards import help_back, main_menu
 from app.bot.texts import (
     M_CANCELED,
     M_ERR_GENERIC,
     M_HELP,
-    M_MAIN,
     PARSE_MODE,
+    render_main_menu,
 )
+from app.core.account_service import AccountService
+from app.core.job_manager import JobManager
 from app.tg.login import LoginFlowManager
 
 logger = logging.getLogger(__name__)
@@ -59,13 +60,23 @@ async def delete_quietly(message: Message) -> None:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
-    await message.answer(M_MAIN, parse_mode=PARSE_MODE, reply_markup=main_menu())
+async def cmd_start(
+    message: Message, accounts: AccountService, jobs: JobManager
+) -> None:
+    if message.from_user is not None:
+        owner_id = message.from_user.id
+        display_name = message.from_user.full_name
+        account_count = len(await accounts.list(owner_id))
+        job_count = len(await jobs.list_jobs(owner_id, limit=100))
+        text = render_main_menu(display_name, account_count, job_count, owner_id)
+    else:
+        text = render_main_menu("مستخدم", 0, 0, 0)
+    await message.answer(text, parse_mode=PARSE_MODE, reply_markup=main_menu())
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(M_HELP, parse_mode=PARSE_MODE, reply_markup=main_menu())
+    await message.answer(M_HELP, parse_mode=PARSE_MODE, reply_markup=help_back())
 
 
 @router.message(Command("cancel"))
@@ -77,20 +88,41 @@ async def cmd_cancel(message: Message, state: FSMContext, logins: LoginFlowManag
 
 
 @router.callback_query(MenuCB.filter(F.action == "main"))
-async def cb_main(query: CallbackQuery, callback_data: MenuCB, state: FSMContext) -> None:
+async def cb_main(
+    query: CallbackQuery, callback_data: MenuCB, state: FSMContext,
+    accounts: AccountService, jobs: JobManager,
+) -> None:
     await state.clear()
     await query.answer()
-    await edit_or_answer(query, M_MAIN, main_menu())
+    if query.from_user is not None:
+        owner_id = query.from_user.id
+        display_name = query.from_user.full_name
+        account_count = len(await accounts.list(owner_id))
+        job_count = len(await jobs.list_jobs(owner_id, limit=100))
+        text = render_main_menu(display_name, account_count, job_count, owner_id)
+    else:
+        text = render_main_menu("مستخدم", 0, 0, 0)
+    await edit_or_answer(query, text, main_menu())
 
 
 @router.callback_query(MenuCB.filter(F.action == "help"))
 async def cb_help(query: CallbackQuery, callback_data: MenuCB) -> None:
     await query.answer()
-    await edit_or_answer(query, M_HELP, main_menu())
+    await edit_or_answer(query, M_HELP, help_back())
 
 
 @router.message()
-async def fallback(message: Message, state: FSMContext) -> None:
+async def fallback(
+    message: Message, state: FSMContext, accounts: AccountService, jobs: JobManager
+) -> None:
     """Any unmatched text returns the main menu."""
     await state.clear()
-    await message.answer(M_MAIN, parse_mode=PARSE_MODE, reply_markup=main_menu())
+    if message.from_user is not None:
+        owner_id = message.from_user.id
+        display_name = message.from_user.full_name
+        account_count = len(await accounts.list(owner_id))
+        job_count = len(await jobs.list_jobs(owner_id, limit=100))
+        text = render_main_menu(display_name, account_count, job_count, owner_id)
+    else:
+        text = render_main_menu("مستخدم", 0, 0, 0)
+    await message.answer(text, parse_mode=PARSE_MODE, reply_markup=main_menu())

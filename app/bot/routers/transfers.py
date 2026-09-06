@@ -23,7 +23,6 @@ from app.bot.texts import (
     M_ASK_SOURCE,
     M_CHECKING,
     M_ERR_GENERIC,
-    M_MAIN,
     M_NOT_FOUND,
     M_NO_ACTIVE_ACCOUNTS,
     M_PICK_ACCOUNT,

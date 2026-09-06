@@ -38,7 +38,13 @@ class UserGateMiddleware(BaseMiddleware):
         if user is None:
             return None  # channel posts / anonymous events: no user to gate
 
-        await repo.upsert_user(self._db, user.id)
+        await repo.upsert_user(
+            self._db,
+            user.id,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            username=user.username,
+        )
         if await repo.is_user_blocked(self._db, user.id):
             await self._refuse(inner)
             return None

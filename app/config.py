@@ -23,6 +23,7 @@ class Config(BaseSettings):
     bot_token: str = Field(min_length=10)
     api_id: int
     api_hash: str = Field(min_length=10)
+    admin_ids: str = Field(default="")
 
     data_dir: Path = Path("data")
     sessions_master_key: str | None = None
@@ -44,6 +45,11 @@ class Config(BaseSettings):
         object.__setattr__(self, "data_dir", self.data_dir.expanduser().resolve())
         object.__setattr__(self, "log_level", self.log_level.upper())
         return self
+
+    @property
+    def admin_id_list(self) -> list[int]:
+        """Returns parsed admin IDs from the comma-separated admin_ids string."""
+        return [int(pid.strip()) for pid in self.admin_ids.split(",") if pid.strip()]
 
     @property
     def db_path(self) -> Path:

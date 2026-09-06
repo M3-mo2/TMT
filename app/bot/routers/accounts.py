@@ -30,6 +30,7 @@ from app.bot.texts import (
     M_ASK_PASSWORD,
     M_DELETED,
     M_DELETE_CONFIRM,
+    M_INVALID_PHONE,
     M_LOGIN_CANCELLED,
     M_LOGIN_EXPIRED,
     M_NOT_FOUND,
@@ -37,6 +38,7 @@ from app.bot.texts import (
     M_SAVED,
     PARSE_MODE,
     esc,
+    normalize_phone,
     render_account_card,
 )
 from app.core.account_service import AccountService, ServiceError
@@ -160,7 +162,10 @@ async def phone_entered(
 ) -> None:
     if message.from_user is None:  # pragma: no cover - gated by middleware
         return
-    phone = (message.text or "").strip()
+    phone = normalize_phone(message.text or "")
+    if len(phone) < 5 or not phone.startswith("+"):
+        await message.answer(M_INVALID_PHONE, parse_mode=PARSE_MODE, reply_markup=login_cancel())
+        return
     try:
         await logins.start(message.from_user.id, phone)
     except LoginFailure as exc:

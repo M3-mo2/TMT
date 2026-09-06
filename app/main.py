@@ -20,6 +20,7 @@ from app.config import Config
 from app.core.account_service import AccountService
 from app.core.events import EventBus
 from app.core.job_manager import JobManager
+from app.core.settings import UserSettings
 from app.db.database import Database
 from app.logging_setup import setup_logging
 from app.security.crypto import SessionCrypto, load_or_create_key
@@ -64,7 +65,8 @@ async def run(config: Config) -> None:
 
         accounts = AccountService(db, crypto, pool)
         engine = TransferEngine()
-        jobs = JobManager(db, pool, crypto, bus, config, engine)
+        user_settings = UserSettings(config)
+        jobs = JobManager(db, pool, crypto, bus, config, engine, settings=user_settings)
         recovered = await jobs.recover()  # before any new job can start (RULES §5)
         if recovered:
             logger.info("boot recovery: %d interrupted job(s) marked", recovered)
@@ -82,6 +84,7 @@ async def run(config: Config) -> None:
             bus=bus,
             pool=pool,
             reporter=reporter,
+            settings=user_settings,
         )
 
         logger.info("bot polling starting")

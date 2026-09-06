@@ -93,7 +93,7 @@ _AR = {
 
 # Login-specific Arabic messages (only used by the login flow).
 _LOGIN_AR = {
-    "PHONE_INVALID": "رقم الهاتف غير صحيح، أعد إدخاله بالصيغة العالمية.",
+    "PHONE_INVALID": "رقم الهاتف غير صحيح 🚶\nاعد ادخاله بالصيغه العالميه • ",
     "PHONE_BANNED": "رقم الهاتف محظور من تيليجرام.",
     "PHONE_UNOCCUPIED": "لا يوجد حساب تيليجرام مرتبط بهذا الرقم.",
     "CODE_INVALID": "الرمز غير صحيح، تحقق من الرمز وأعد إدخاله.",

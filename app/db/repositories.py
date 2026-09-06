@@ -29,12 +29,29 @@ def now_iso() -> str:
 # ---------------------------------------------------------------- users
 
 
-async def upsert_user(db: Database, user_id: int) -> None:
+async def upsert_user(
+    db: Database,
+    user_id: int,
+    *,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    username: str | None = None,
+) -> None:
+    """Insert the user, or refresh their contact name + ``updated_at``.
+
+    Name columns use ``COALESCE`` so a name-less caller (``account_service``
+    save_login) refreshes ``updated_at`` without ever clobbering a name that the
+    middleware already captured (RULES §3: never lose data silently)."""
     ts = now_iso()
     await db.execute(
-        "INSERT INTO users (id, created_at, updated_at) VALUES (?, ?, ?) "
-        "ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at",
-        (user_id, ts, ts),
+        "INSERT INTO users (id, first_name, last_name, username, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET "
+        "first_name=COALESCE(excluded.first_name, first_name), "
+        "last_name=COALESCE(excluded.last_name, last_name), "
+        "username=COALESCE(excluded.username, username), "
+        "updated_at=excluded.updated_at",
+        (user_id, first_name, last_name, username, ts, ts),
     )
 
 
@@ -398,3 +415,116 @@ async def audit(
             json.dumps(detail or {}, ensure_ascii=False),
         ),
     )
+
+
+# ---------------------------------------------------------------- admin / channels
+
+
+async def list_channels(db: Database) -> list[dict[str, Any]]:
+    rows = await db.fetch_all(
+        "SELECT id, channel_id, title, invite_link, is_active FROM channels ORDER BY id"
+    )
+    return [dict(row) for row in rows]
+
+
+async def add_channel(
+    db: Database, *, channel_id: int, title: str, invite_link: str
+) -> int:
+    return await db.execute(
+        "INSERT INTO channels (channel_id, title, invite_link, is_active) VALUES (?, ?, ?, 1)",
+        (channel_id, title, invite_link),
+    )
+
+
+async def toggle_channel(db: Database, channel_db_id: int) -> bool:
+    cur = await db.conn.execute(
+        "UPDATE channels SET is_active = 1 - is_active WHERE id=?", (channel_db_id,)
+    )
+    return cur.rowcount > 0
+
+
+async def delete_channel(db: Database, channel_db_id: int) -> bool:
+    cur = await db.conn.execute(
+        "DELETE FROM channels WHERE id=?", (channel_db_id,)
+    )
+    return cur.rowcount > 0
+
+
+async def active_channels(db: Database) -> list[dict[str, Any]]:
+    rows = await db.fetch_all(
+        "SELECT channel_id, title, invite_link FROM channels WHERE is_active=1 ORDER BY id"
+    )
+    return [dict(row) for row in rows]
+
+
+async def count_users(db: Database) -> int:
+    row = await db.fetch_one("SELECT COUNT(*) AS c FROM users")
+    return int(row["c"]) if row else 0
+
+
+async def count_jobs(db: Database) -> int:
+    row = await db.fetch_one("SELECT COUNT(*) AS c FROM jobs")
+    return int(row["c"]) if row else 0
+
+
+async def count_completed_jobs(db: Database) -> int:
+    row = await db.fetch_one(
+        "SELECT COUNT(*) AS c FROM jobs WHERE status=?",
+        (JobStatus.COMPLETED.value,),
+    )
+    return int(row["c"]) if row else 0
+
+
+async def list_all_users(db: Database, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    rows = await db.fetch_all(
+        "SELECT id, first_name, last_name, username, created_at, updated_at, is_blocked "
+        "FROM users ORDER BY id LIMIT ? OFFSET ?",
+        (limit, offset),
+    )
+    return [dict(row) for row in rows]
+
+
+async def get_user(db: Database, user_id: int) -> dict[str, Any] | None:
+    row = await db.fetch_one(
+        "SELECT id, first_name, last_name, username, created_at, updated_at, is_blocked "
+        "FROM users WHERE id=?",
+        (user_id,),
+    )
+    return dict(row) if row else None
+
+
+async def set_user_blocked(db: Database, user_id: int, blocked: bool) -> None:
+    if blocked:
+        await db.execute(
+            "UPDATE users SET is_blocked=1 WHERE id=? AND is_blocked=0", (user_id,)
+        )
+    else:
+        await db.execute(
+            "UPDATE users SET is_blocked=0 WHERE id=? AND is_blocked=1", (user_id,)
+        )
+
+
+async def count_accounts_for_user(db: Database, owner_id: int) -> int:
+    row = await db.fetch_one("SELECT COUNT(*) AS c FROM accounts WHERE owner_id=?", (owner_id,))
+    return int(row["c"]) if row else 0
+
+
+async def count_jobs_for_user(db: Database, owner_id: int) -> int:
+    row = await db.fetch_one("SELECT COUNT(*) AS c FROM jobs WHERE owner_id=?", (owner_id,))
+    return int(row["c"]) if row else 0
+
+
+async def count_completed_jobs_for_user(db: Database, owner_id: int) -> int:
+    row = await db.fetch_one(
+        "SELECT COUNT(*) AS c FROM jobs WHERE owner_id=? AND status=?",
+        (owner_id, JobStatus.COMPLETED.value),
+    )
+    return int(row["c"]) if row else 0
+
+
+async def count_failed_jobs_for_user(db: Database, owner_id: int) -> int:
+    row = await db.fetch_one(
+        "SELECT COUNT(*) AS c FROM jobs WHERE owner_id=? AND status=?",
+        (owner_id, JobStatus.FAILED.value),
+    )
+    return int(row["c"]) if row else 0

@@ -10,27 +10,30 @@ user-controlled (titles, usernames, refs, raw input) must go through
 from __future__ import annotations
 
 import html
-from typing import Iterable
+from typing import Any, Iterable
 
-from app.core.models import Account, AccountStatus, Check, CheckStatus, Job, JobStatus
+from app.core.models import Account, AccountStatus, Check, CheckStatus, Job, JobStatus, UserStats
 
 PARSE_MODE = "HTML"
 
 __all__ = [
     "PARSE_MODE",
-    "BUT_ACCOUNTS", "BUT_TRANSFER", "BUT_JOBS", "BUT_HELP", "BUT_MAIN",
+    "BUT_ACCOUNTS", "BUT_TRANSFER", "BUT_JOBS", "BUT_SETTINGS", "BUT_HELP", "BUT_MAIN",
     "BUT_ADD_ACCOUNT", "BUT_BACK", "BUT_CANCEL", "BUT_DELETE",
     "BUT_CONFIRM_DELETE", "BUT_REFRESH", "BUT_START_TRANSFER",
-    "M_MAIN", "M_HELP", "M_BLOCKED", "M_PRIVATE_ONLY", "M_CANCELED",
+    "M_HELP", "M_BLOCKED", "M_PRIVATE_ONLY", "M_CANCELED",
     "M_ACCOUNTS_TITLE", "M_ACCOUNTS_EMPTY", "M_ADD_ACCOUNT_PROMPT",
-    "M_ASK_CODE", "M_ASK_PASSWORD", "M_LOGIN_EXPIRED", "M_LOGIN_CANCELLED",
-    "M_DELETED", "M_DELETE_CONFIRM", "M_NOT_FOUND", "M_ERR_GENERIC",
+    "M_ASK_CODE", "M_ASK_PASSWORD",     "M_LOGIN_EXPIRED", "M_LOGIN_CANCELLED", "M_RETRY_AFTER", "M_NO_ACTIVE_ACCOUNTS",
+    "M_INVALID_PHONE",
+    "M_DELETED", "M_DELETE_CONFIRM", "M_NOT_FOUND", "M_ERR_GENERIC", "M_ACCOUNT_BUSY",
     "M_WIZARD_TITLE", "M_PICK_ACCOUNT", "M_ASK_SOURCE",
     "M_SOURCE_RESOLVED", "M_CHECKING", "M_SAME_GROUP",
     "M_WIZARD_CANCELLED", "M_TRANSFER_STARTED", "M_JOBS_EMPTY",
     "M_JOB_CANCELLED", "M_JOB_NOT_CANCELLABLE", "M_INTERRUPTED_NOTE",
     "M_DELETED_ACCOUNT",
-    "esc", "mask_phone", "render_preflight", "render_account_card",
+    "M_SETTINGS_TITLE", "M_SETTINGS_SUMMARY", "M_SETTING_PROMPT",
+    "M_SETTING_INVALID", "M_SETTING_SAVED", "render_settings",
+    "esc", "mask_phone", "normalize_phone", "render_main_menu", "render_admin_menu", "render_user_card", "render_preflight", "render_account_card",
     "render_jobs_list", "render_job_card", "render_progress_card",
     "render_final_summary", "job_glyph", "job_label", "account_status_label",
     "skip_reason_label", "phase_label",
@@ -59,31 +62,132 @@ BUT_DELETE = "× حذف"
 BUT_CONFIRM_DELETE = "× تأكيد الحذف"
 BUT_REFRESH = "› تحديث"
 BUT_START_TRANSFER = "› بدء النقل"
+BUT_SETTINGS = "› الإعدادات"
+BUT_RESET = "↺ إعادة تعيين"
 
 # ---------------------------------------------------------------- generic
 
-M_MAIN = "<b>أهلاً بك في بوت نقل الأعضاء</b>\nاختر ما تريد من القائمة."
+def render_main_menu(display_name: str, account_count: int, job_count: int, owner_id: int) -> str:
+    name_line = f"↢ <b>أهلا بك يا <a href=\"tg://user?id={owner_id}\">{esc(display_name)}</a></b> 👋"
+    return "\n".join([
+        name_line,
+        "",
+        f"👤|عدد حساباتك المضافه ↼ <code>{account_count}</code>",
+        f"🔰|عدد عمليات النقل ↼ <code>{job_count}</code>",
+        f"💳|ايدي ↼ <code>{owner_id}</code>",
+        "――――――――――――――――――――",
+        "",
+        "اختر ما تريد من القائمه ↓",
+    ])
+
+
+def render_admin_menu(user_count: int, jobs_count: int, completed_count: int) -> str:
+    return "\n".join([
+        "أهلا بك في لوحه التحكم .",
+        "",
+        f"👤|عدد مستخدمين الكلي ↼ <code>{user_count}</code>",
+        f"🔰|عدد النقل الكلي ↼ <code>{jobs_count}</code>",
+        f"🏷|عدد العمليات المكتمله ↼ <code>{completed_count}</code>",
+        "――――――――――――――――――――",
+        "",
+        "استخدم الازرار للتنقل ↓",
+    ])
+
+
+def user_full_name(user: dict[str, Any]) -> str:
+    """Best-effort public name for a user row: ``first last``, else ``#id``."""
+    parts = [user.get("first_name"), user.get("last_name")]
+    name = " ".join(p for p in parts if p)
+    return name or f"#{user['id']}"
+
+
+def render_user_card(user: dict[str, Any], accounts: list[Account], stats: UserStats) -> str:
+    """Admin user detail view: identity, last-seen, activity stats, accounts."""
+    blocked = bool(user["is_blocked"])
+    uname = user.get("username")
+    lines = [
+        f"<b>👤 {esc(user_full_name(user))}</b>",
+        f"›|معرف التيليجرام ↼ <code>{user['id']}</code>",
+        f"›|اسم المستخدم ↼ {f'@{esc(uname)}' if uname else '—'}",
+        f"›|تاريخ الانضمام ↼ <code>{esc(user.get('created_at') or '')}</code>",
+        f"›|آخر ظهور ↼ <code>{esc(user.get('updated_at') or '')}</code>",
+        f"{GLYPH_FAIL if blocked else GLYPH_PASS}|الحالة ↼ <code>{'محظور' if blocked else 'نشط'}</code>",
+        "",
+        "⟡ إحصاءات المستخدم:",
+        f"👤|الحسابات المضافة ↼ <code>{stats.accounts}</code>",
+        f"🔰|إجمالي العمليات ↼ <code>{stats.jobs}</code>",
+        f"✅|مكتملة ↼ <code>{stats.completed}</code>",
+        f"{GLYPH_FAIL}|فاشلة ↼ <code>{stats.failed}</code>",
+        f"›|نشطة الأن ↼ <code>{stats.active}</code>",
+        "",
+        "⟡ الحسابات المضافة له:",
+    ]
+    if accounts:
+        for a in accounts:
+            handle = f"@{esc(a.tg_username)}" if a.tg_username else f"<code>{a.tg_user_id}</code>"
+            lim = f"، محدود حتى {esc(a.limited_until)}" if a.limited_until else ""
+            lines.append(f"• {handle} — {esc(a.display_name)} ({account_status_label(a.status)}{lim})")
+    else:
+        lines.append("• لا توجد حسابات مضافة.")
+    lines.append("")
+    lines.append("استخدم الازرار للتنقل ↓")
+    return "\n".join(lines)
 M_HELP = (
-    "<b>طريقة الاستخدام</b>\n"
-    "› أضف حسابك الشخصي من قسم الحسابات.\n"
-    "› ابدأ عملية نقل واختر الحساب والمجموعة المصدر والهدف.\n"
-    "› راجع تقرير الفحص ثم أكد لبدء النقل.\n"
-    "› تابع التقدم من بطاقة العملية وألغِ في أي وقت.\n"
+    "📚|<b>طريقة الاستخدام</b>\n"
+    "ــــــــــــــــــــــــــــــــــ\n\n"
+    "› <code>1</code>. أضف حسابك الشخصي من قسم الحسابات.\n"
+    "› <code>2</code>. ابدأ عملية نقل واختر الحساب والمجموعة المصدر والهدف.\n"
+    "› <code>3</code>. راجع تقرير الفحص ثم أكد لبدء النقل.\n"
+    "› <code>4</code>. تابع التقدم من بطاقة العملية وألغِ في أي وقت.\n"
+    "ــــــــــــــــــــــــــــــــــ\n"
+    "🔐|<b>الخصوصيه</b>\n"
     "الرمز وكلمة المرور يُحذفان من المحادثة فور الإرسال."
 )
-M_BLOCKED = "لا يمكنك استخدام هذا البوت."
+M_SETTINGS_TITLE = "⟡ الإعدادات"
+M_SETTINGS_SUMMARY = "← اضغط على أي إعداد لتعديله أو احفظ القيم الافتراضية."
+M_SETTING_PROMPT = "<b>{label}</b>\n↢ أرسل القيمة الجديدة.\n⋆<code>{current}</code>"
+M_SETTING_INVALID = "× القيمة غير صالحة. أرسل عدداً صحيحاً."
+M_SETTING_SAVED = "تم حفظ الإعداد."
+
+
+#: (display_label, unit_label) — one entry per overridable config key.
+_SETTING_SPECS: dict[str, tuple[str, str]] = {
+    "max_members_per_job": ("⟡ الحد الأقصى للأعضاء في العملية", "عدد الأعضاء"),
+    "invite_delay_seconds": ("⟡ التأخير بين الدعوات", "ثانية"),
+    "flood_wait_max_seconds": ("⟡ الحد الأقصى لانتظار FloodWait", "ثانية"),
+    "job_timeout_seconds": ("⟡ مهلة العملية", "ثانية"),
+}
+
+
+def render_settings(current: Config | None = None, values: dict[str, object] | None = None) -> str:
+    lines = [M_SETTINGS_TITLE]
+    lines.append("")
+    if current is not None:
+        for key, (label, unit) in _SETTING_SPECS.items():
+            val = getattr(current, key)
+            lines.append(f"{label} ↼ <code>{val} {unit}</code>")
+    elif values:
+        for key, (label, unit) in _SETTING_SPECS.items():
+            val = values.get(key, "—")
+            lines.append(f"{label} ↼ <code>{val} {unit}</code>")
+    lines.append("")
+    lines.append(M_SETTINGS_SUMMARY)
+    return "\n".join(lines)
+M_BLOCKED = "انت محظور من استخدام البوت، اذا كنت تعتقد ان هذا خطأ تواصل مع المالك @M3_mo2"
 M_PRIVATE_ONLY = "افتح المحادثة الخاصة مع البوت."
 M_CANCELED = "تم الإلغاء."
 M_NOT_FOUND = "العنصر غير موجود."
 M_ERR_GENERIC = "حدث خطأ غير متوقع، أعد المحاولة."
+M_ACCOUNT_BUSY = "× الحساب مشغول الآن — عملية نقل جارية عليه، ألغِها أولاً."
 M_DELETED_ACCOUNT = "حساب محذوف"
 
 # ---------------------------------------------------------------- accounts
 
-M_ACCOUNTS_TITLE = "<b>حساباتك</b>"
+M_ACCOUNTS_TITLE = "<b>حساباتك المضافه فالبوت ↓</b>"
 M_ACCOUNTS_EMPTY = "لا توجد حسابات مضافة بعد.\nأضف حسابك الأول للبدء."
 M_ADD_ACCOUNT_PROMPT = (
-    "أرسل رقم هاتف الحساب بالصيغة الدولية، مثال:\n<code>+201xxxxxxxxx</code>"
+    "⤸ أرسل رقم هاتف الحساب بالصيغة الدولية \n\n⋆مثال ← <code>+201xxxxxxxxx</code> "
+    "(يمكن إدخال المسافات أو الشرطات، سيتم توحيده تلقائياً)"
 )
 M_ASK_CODE = "أرسل رمز التحقق الذي وصلك في تيليجرام.\nسيُحذف من المحادثة فور الإرسال."
 M_ASK_PASSWORD = (
@@ -93,6 +197,9 @@ M_LOGIN_EXPIRED = "انتهت صلاحية عملية الدخول، ابدأ م
 M_LOGIN_CANCELLED = "أُلغيت عملية الدخول."
 M_RETRY_AFTER = "أعد المحاولة بعد {seconds} ثانية."
 M_NO_ACTIVE_ACCOUNTS = "لا يوجد حساب نشط، أضف حساباً أو أعد تسجيل الدخول."
+M_INVALID_PHONE = (
+    "× الرقم غير صالح. أرسل رقم الهاتف بالصيغة الدولية، مثال: +201xxxxxxxxx"
+)
 M_DELETED = "حُذف الحساب."
 M_DELETE_CONFIRM = "هل تريد حذف الحساب <b>{name}</b>؟"
 M_SAVED = "تم حفظ الحساب."
@@ -119,25 +226,37 @@ def mask_phone(phone: str) -> str:
     return "+" + head + "•" * max(1, len(digits) - len(head) - len(tail)) + tail
 
 
+def normalize_phone(raw: str) -> str:
+    """Accept human-friendly international phone formats such as
+    ``+20 10 0307 2694`` or ``+1 (202) 555-0123`` and collapse to a
+    canonical ``+E.164`` form (digits only, leading ``+``)."""
+    cleaned = raw.strip()
+    sign = "+" if cleaned.startswith("+") else ""
+    digits = "".join(ch for ch in cleaned if ch.isdigit())
+    if not digits:
+        return sign
+    return sign + digits
+
+
 def render_account_card(account: Account) -> str:
     handle = f"@{esc(account.tg_username)}" if account.tg_username else (
         f"<code>{esc(str(account.tg_user_id))}</code>"
     )
     return (
-        f"<b>{esc(account.display_name)}</b>\n"
-        f"الحساب: {handle}\n"
-        f"الهاتف: <code>{esc(mask_phone(account.phone))}</code>\n"
-        f"الحالة: {account_status_label(account.status)}"
+        f"<a href=\"tg://user?id={account.tg_user_id}\">{esc(account.display_name)}</a> ✿\n"
+        f"👤|الحساب ↼ {handle}\n"
+        f"📱|الهاتف ↼ <code>{esc(mask_phone(account.phone))}</code>\n"
+        f"› الحالة ↼ {account_status_label(account.status)} ✓"
     )
 
 
 # ---------------------------------------------------------------- transfers
 
-M_WIZARD_TITLE = "<b>عملية نقل جديدة</b>"
-M_PICK_ACCOUNT = "اختر الحساب الذي سينفذ النقل:"
-M_ASK_SOURCE = "أرسل مرجع المجموعة المصدر: @اسم أو رابط أو معرف رقمي."
-M_SOURCE_RESOLVED = "تم تحديد المصدر: <b>{title}</b>\nأرسل مرجع المجموعة الهدف: @اسم أو رابط أو معرف رقمي."
-M_CHECKING = "جارٍ الفحص…"
+M_WIZARD_TITLE = "<b>⇜ عملية نقل جديدة .</b>"
+M_PICK_ACCOUNT = "اختر الحساب الذي سينفذ النقل ↓"
+M_ASK_SOURCE = "ارسل يوزر او رابط المجموعه اللتي سيتم النقل منها الاعضاء \n𑗁"
+M_SOURCE_RESOLVED = "تم تحديد المجموعه اللتي سيتم النقل منها ← <b>{title}</b>\n\nارسل يوزر او رابط المجموعه اللتي سيتم النقل اليها ⤾"
+M_CHECKING = "<b>جارٍ الفحص…</b>"
 M_SAME_GROUP = "المصدر والهدف هما نفس المجموعة، اختر هدفاً مختلفاً."
 M_WIZARD_CANCELLED = "أُلغيت العملية، يمكنك البدء من جديد."
 M_TRANSFER_STARTED = (
@@ -240,24 +359,33 @@ def render_jobs_list(jobs: list[Job]) -> str:
     return "\n".join(lines)
 
 
-def _skip_lines(skip_reasons: dict[str, int]) -> list[str]:
-    ordered = sorted(skip_reasons.items(), key=lambda kv: kv[1], reverse=True)
-    return [f"{GLYPH_INFO} {skip_reason_label(reason)}: {count}" for reason, count in ordered]
-
-
 def render_job_card(job: Job, account_name: str | None) -> str:
     glyph, label = _JOB_VIEW[job.status]
     account_line = esc(account_name) if account_name else M_DELETED_ACCOUNT
     lines = [
         f"<b>العملية <code>#{job.id}</code></b> — {glyph} {label}",
-        f"الحساب: {account_line}",
-        f"المسار: {esc(job.source_title)} ← {esc(job.dest_title)}",
-        f"دُعي: {job.invited} | تخطي: {job.skipped} | فشل: {job.failed} من {job.total}",
+        f"👤|الحساب ↼ <b>{account_line}</b>",
+        f"🔰|مسار عمليه النقل ↼ {esc(job.source_title)} ← {esc(job.dest_title)}",
+        "",
+        f"✅|تم اضافه ↼ <code>{job.invited}</code>",
+        f"- تخطي ↼ <code>{job.skipped}</code>",
+        f"- فشل ↼ <code>{job.failed}</code> من <code>{job.total}</code>",
     ]
-    lines.extend(_skip_lines(job.skip_reasons))
+    for reason, count in sorted(job.skip_reasons.items(), key=lambda kv: kv[1], reverse=True):
+        lines.append(f"› {skip_reason_label(reason)}: <code>{count}</code>")
     if job.error:
         lines.append(f"السبب: {esc(job.error)}")
-    if job.status is JobStatus.INTERRUPTED:
+    if job.status is JobStatus.COMPLETED:
+        lines.append("")
+        lines.append("✨|عمليه ناجحه .")
+    elif job.status is JobStatus.FAILED:
+        lines.append("")
+        lines.append("✨|العمليه فشلت .")
+    elif job.status is JobStatus.CANCELLED:
+        lines.append("")
+        lines.append("✨|تم الغي العمليه .")
+    elif job.status is JobStatus.INTERRUPTED:
+        lines.append("")
         lines.append(M_INTERRUPTED_NOTE)
     return "\n".join(lines)
 
@@ -273,13 +401,19 @@ def render_progress_card(
     wait_left: int = 0,
     note: str = "",
 ) -> str:
+    glyph = GLYPH_INFO
+    phase_ar = phase_label(phase)
     lines = [
-        f"<b>العملية <code>#{job_id}</code></b> — {esc(phase_label(phase))}",
-        f"تم: {done}/{total}",
-        f"دُعي: {invited} | تخطي: {skipped} | فشل: {failed}",
+        f"<b>العملية <code>#{job_id}</code></b> — {glyph} {phase_ar}",
+        f"👤|الحاله ↼ <code>{done}/{total}</code>",
+        f"🔰|مسار عمليه النقل ↼",
+        "",
+        f"✅|تم اضافه ↼ <code>{invited}</code>",
+        f"- تخطي ↼ <code>{skipped}</code>",
+        f"- فشل ↼ <code>{failed}</code>",
     ]
     if wait_left > 0:
-        lines.append(f"بانتظار تيليجرام: {wait_left} ثانية")
+        lines.append(f"› بانتظار تيليجرام: <code>{wait_left}</code> ثانية")
     if note:
         lines.append(esc(note))
     return "\n".join(lines)
@@ -296,10 +430,15 @@ def render_final_summary(
 ) -> str:
     glyph, label = _JOB_VIEW[status]
     lines = [
-        f"<b>انتهت العملية <code>#{job_id}</code></b> — {glyph} {label}",
-        f"دُعي: {invited} | تخطي: {skipped} | فشل: {failed}",
+        f"✨|العمليه تمت .",
+        f"<b>العملية <code>#{job_id}</code></b> — {glyph} {label}",
+        f"✅|تم اضافه ↼ <code>{invited}</code>",
+        f"› تخطي ↼ <code>{skipped}</code>",
+        f"› فشل ↼ <code>{failed}</code>",
+        "ــــــــــــــــــــــــــــــ",
     ]
-    lines.extend(_skip_lines(skip_reasons or {}))
+    for reason, count in sorted((skip_reasons or {}).items(), key=lambda kv: kv[1], reverse=True):
+        lines.append(f"› {skip_reason_label(reason)}: <code>{count}</code>")
     if error:
         lines.append(f"السبب: {esc(error)}")
     return "\n".join(lines)
