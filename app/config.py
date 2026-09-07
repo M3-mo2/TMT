@@ -40,6 +40,13 @@ class Config(BaseSettings):
     login_ttl_seconds: int = Field(default=600, ge=60)
     progress_edit_min_interval: float = Field(default=4.0, ge=1)
 
+    # Broadcast Campaign Engine (BroadcastEngine.md §4)
+    max_bcast_concurrency: int = Field(default=10, ge=1)
+    bcast_max_rate_per_second: int = Field(default=25, ge=1)
+    bcast_flood_retry_threshold: int = Field(default=60, ge=1)
+    bcast_retry_attempts: int = Field(default=3, ge=1)
+    bcast_retry_backoff_base: float = Field(default=2.0, ge=0.1)
+
     @model_validator(mode="after")
     def _normalize(self) -> Config:
         object.__setattr__(self, "data_dir", self.data_dir.expanduser().resolve())

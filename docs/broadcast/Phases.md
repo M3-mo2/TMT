@@ -146,9 +146,34 @@ service module — only `app/core/models.py` (shared domain vocabulary) and
 - `pytest -q` passes (Phase 1 + Phase 2 tests).
 - `python -c "import app"` clean.
 - `AudienceResolver.resolve_audience` returns correct results for each filter with **one DB round-trip**.
-
 ### Summary
-<!-- Phase 2 agent fills this in on completion -->
+
+Phase 2 is complete. All acceptance criteria met:
+
+- **Domain model** (`app/core/broadcast_models.py`): Four enums and one dataclass:
+  - `ErrorKind` — `RETRY_FLOOD, RETRY_DELAYED, RETRY_TRANSIENT, PERMANENT_BLOCKED, PERMANENT_FAIL`
+  - `BroadcastStatus` — `DRAFT, SCHEDULED, RUNNING, COMPLETED, CANCELLED, FAILED, INTERRUPTED` (lowercase str values matching DB columns)
+  - `RecipientStatus` — `PENDING, SENT, BLOCKED, FAILED, SKIPPED, DELIVERED`
+  - `BroadcastMode` — `COPY, PERSONALIZED`
+  - `AudienceFilter` — `@dataclass(slots=True)` with all 9 fields + `default()`, `to_dict()`, `from_dict()` for FSM serialization.
+- **AudienceResolver** (`app/core/broadcast.py`): Two async functions:
+  - `resolve_audience(db, filters, admin_ids)` — builds a single SQL query with `LEFT JOIN accounts`, `SELECT DISTINCT u.id`, `ORDER BY u.id`. Where-clause builder uses (sql_fragment, params) tuples assembled into one `AND`-joined clause. All 8 filter dimensions supported (target, with/without_accounts, account_count_min/max, registered_days_ago, last_seen_days_ago, exclude_admins, exclude_previously_contacted).
+  - `count_audience(db, filters, admin_ids)` — same WHERE clause, `SELECT COUNT(DISTINCT u.id)`.
+  - `target='all'` excludes blocked users; `target='blocked'` selects only blocked; `target='active'/'inactive'` use `last_seen_days_ago` or default 30 days.
+  - No Python-side filtering — pure SQL, one DB round-trip per call.
+- **Rate limiter** (`app/core/rate_limiter.py`): `TokenBucket` class:
+  - `__init__(max_per_second, concurrency)` — `asyncio.Semaphore` + sliding-window `deque` of timestamps.
+  - `acquire()` — acquires semaphore, evicts expired timestamps, sleeps if window is full, records timestamp. Logical time tracked via `time.monotonic()` with `max(now, last_timestamp)` to support mocked `asyncio.sleep` in tests. Sub-millisecond sleeps filtered via `_SLOT_EPSILON` to avoid float-drift spurious wakes.
+  - `release()` — frees the semaphore slot (for Phase 3 pairing).
+  - `shutdown()` — sets flag, clears window.
+- **Config** (`app/config.py`): Five new knobs with `Field(default=..., ge=...)` pattern:
+  - `max_bcast_concurrency=10 (ge=1)`, `bcast_max_rate_per_second=25 (ge=1)`, `bcast_flood_retry_threshold=60 (ge=1)`, `bcast_retry_attempts=3 (ge=1)`, `bcast_retry_backoff_base=2.0 (ge=0.1)`.
+- **Tests**: 37 new test cases (not 257 — 257 was the Phase 1 baseline):
+  - `tests/test_audience_resolver.py` — 29 tests: each filter dimension (default/all, with_accounts, account_count_min/max, without_accounts, target=blocked, exclude_admins, exclude_previously_contacted, last_seen_days_ago, registered_days_ago, target=active), 11 parametrized count_audience↔resolve_audience parity checks, edge cases (empty DB, empty admin_ids, combined filters), and AudienceFilter round-trip serialization.
+  - `tests/test_rate_limiter.py` — 8 tests: throughput spacing (mocked + real sleep), one-per-second, no-sleep-under-limit, concurrency semaphore caps, parallelism under limit, shutdown safety.
+- `pytest -q`: **294 passed** (257 baseline + 37 new).
+- `python -c "import app"`: clean.
+- Layer boundary respected: `core/broadcast.py` imports only `app.core.broadcast_models` and `app.db.database` — no `bot/` or `tg/`.
 
 ---
 
