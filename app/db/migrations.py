@@ -133,11 +133,62 @@ ALTER TABLE users ADD COLUMN last_name TEXT;
 ALTER TABLE users ADD COLUMN username TEXT;
 """
 
+# v5: Broadcast Campaign Engine — campaigns, per-recipient delivery rows,
+# and exclusion lists (BroadcastEngine.md §2). All FKs reference the
+# pre-existing `users` table (V1). Plain `PRIMARY KEY` (no AUTOINCREMENT,
+# RULES §6). ON CONFLICT DO NOTHING is standard SQL upsert (portable).
+_V5 = """
+CREATE TABLE broadcasts (
+    id INTEGER PRIMARY KEY,
+    admin_id INTEGER NOT NULL REFERENCES users(id),
+    label TEXT NOT NULL DEFAULT '',
+    source_chat_id INTEGER NOT NULL,
+    source_message_id INTEGER NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'copy',
+    content_html TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    scheduled_for TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    total_recipients INTEGER NOT NULL DEFAULT 0,
+    sent INTEGER NOT NULL DEFAULT 0,
+    blocked INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    cancelled INTEGER NOT NULL DEFAULT 0,
+    avg_rate REAL,
+    error TEXT
+);
+
+CREATE TABLE broadcast_recipients (
+    broadcast_id INTEGER NOT NULL REFERENCES broadcasts(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    last_attempt_at TEXT,
+    sent_at TEXT,
+    UNIQUE(broadcast_id, user_id)
+);
+
+CREATE TABLE broadcast_exclusions (
+    broadcast_id INTEGER NOT NULL REFERENCES broadcasts(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    UNIQUE(broadcast_id, user_id)
+);
+
+CREATE INDEX idx_bcast_status ON broadcasts(status);
+CREATE INDEX idx_brec_status ON broadcast_recipients(broadcast_id, status);
+CREATE INDEX idx_brec_user ON broadcast_recipients(user_id);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
     (3, _V3),
     (4, _V4),
+    (5, _V5),
 ]
 
 

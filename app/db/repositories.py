@@ -528,3 +528,227 @@ async def count_failed_jobs_for_user(db: Database, owner_id: int) -> int:
         (owner_id, JobStatus.FAILED.value),
     )
     return int(row["c"]) if row else 0
+
+
+# ---------------------------------------------------------------- broadcasts
+
+
+# Columns that ``set_broadcast_status`` is allowed to update beyond ``status``.
+_BCAST_COUNTER_COLUMNS: frozenset[str] = frozenset(
+    {
+        "total_recipients",
+        "sent",
+        "blocked",
+        "failed",
+        "skipped",
+        "cancelled",
+        "avg_rate",
+        "started_at",
+        "finished_at",
+        "error",
+    }
+)
+
+
+async def create_broadcast(
+    db: Database,
+    *,
+    admin_id: int,
+    label: str,
+    source_chat_id: int,
+    source_message_id: int,
+    mode: str = "copy",
+    content_html: str | None = None,
+) -> int:
+    """Persist a new broadcast campaign in ``draft`` status.
+
+    Returns the new ``broadcasts.id`` surrogate key.  ``created_at`` is set
+    in application code via ``now_iso()`` (RULES §6: no SQLite-isms in the
+    application layer).
+    """
+    return await db.execute(
+        "INSERT INTO broadcasts "
+        "(admin_id, label, source_chat_id, source_message_id, "
+        "mode, content_html, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)",
+        (
+            admin_id,
+            label,
+            source_chat_id,
+            source_message_id,
+            mode,
+            content_html,
+            now_iso(),
+        ),
+    )
+
+
+async def get_broadcast(db: Database, broadcast_id: int) -> dict[str, Any] | None:
+    row = await db.fetch_one("SELECT * FROM broadcasts WHERE id=?", (broadcast_id,))
+    return dict(row) if row else None
+
+
+async def set_broadcast_status(
+    db: Database,
+    broadcast_id: int,
+    status: str,
+    **counters: Any,
+) -> None:
+    """Update ``broadcasts.status`` plus any allowed counter columns.
+
+    Keyword arguments are validated against ``_BCAST_COUNTER_COLUMNS`` so a
+    typo surfaces immediately instead of silently doing nothing.
+    """
+    sets: list[str] = ["status=?"]
+    params: list[Any] = [status]
+    for col, val in counters.items():
+        if col not in _BCAST_COUNTER_COLUMNS:
+            raise ValueError(f"Unknown broadcast column for set_broadcast_status: {col}")
+        sets.append(f"{col}=?")
+        params.append(val)
+    params.append(broadcast_id)
+    await db.execute(
+        f"UPDATE broadcasts SET {', '.join(sets)} WHERE id=?", params
+    )
+
+
+async def list_broadcasts(
+    db: Database, status: str | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    if status is None:
+        rows = await db.fetch_all(
+            "SELECT * FROM broadcasts ORDER BY id DESC LIMIT ?", (limit,)
+        )
+    else:
+        rows = await db.fetch_all(
+            "SELECT * FROM broadcasts WHERE status=? ORDER BY id DESC LIMIT ?",
+            (status, limit),
+        )
+    return [dict(row) for row in rows]
+
+
+async def insert_recipients(
+    db: Database, broadcast_id: int, user_ids: Iterable[int]
+) -> None:
+    """Bulk-insert recipient user IDs.
+
+    Idempotent: ``ON CONFLICT DO NOTHING`` skips duplicates so re-running
+    ``start`` never double-sends (BroadcastEngine.md §2.2).  All rows go
+    in a single transaction (RULES §6: multi-row writes).
+    """
+    ids = list(user_ids)
+    if not ids:
+        return
+    async with db.tx() as conn:
+        await conn.executemany(
+            "INSERT INTO broadcast_recipients (broadcast_id, user_id) "
+            "VALUES (?, ?) ON CONFLICT(broadcast_id, user_id) DO NOTHING",
+            [(broadcast_id, uid) for uid in ids],
+        )
+
+
+async def list_pending_recipients(
+    db: Database, broadcast_id: int, limit: int
+) -> list[int]:
+    """Return user IDs of recipients still in ``pending`` status.
+
+    Ordered by ``user_id ASC`` for deterministic cursor-based paging (the
+    caller tracks the last-seen ID).  Skips any recipient already in a
+    terminal/final status.
+    """
+    rows = await db.fetch_all(
+        "SELECT user_id FROM broadcast_recipients "
+        "WHERE broadcast_id=? AND status='pending' "
+        "ORDER BY user_id ASC LIMIT ?",
+        (broadcast_id, limit),
+    )
+    return [int(row["user_id"]) for row in rows]
+
+
+async def update_recipient_status(
+    db: Database,
+    broadcast_id: int,
+    user_id: int,
+    status: str,
+    *,
+    error: str | None = None,
+    increment_attempts: bool = False,
+) -> None:
+    """Set a recipient's status, optionally recording an error and bumping
+    ``attempt_count``.  ``last_attempt_at`` is always refreshed because any
+    status update represents a send attempt."""
+    sets: list[str] = ["status=?"]
+    params: list[Any] = [status]
+    if error is not None:
+        sets.append("last_error=?")
+        params.append(error)
+    if increment_attempts:
+        sets.append("attempt_count=attempt_count+1")
+    sets.append("last_attempt_at=?")
+    params.append(now_iso())
+    params.append(broadcast_id)
+    params.append(user_id)
+    await db.execute(
+        f"UPDATE broadcast_recipients SET {', '.join(sets)} "
+        "WHERE broadcast_id=? AND user_id=?",
+        params,
+    )
+
+
+async def create_exclusion_list(
+    db: Database, broadcast_id: int, user_ids: Iterable[int]
+) -> None:
+    """Bulk-insert exclusion user IDs (idempotent, single transaction)."""
+    ids = list(user_ids)
+    if not ids:
+        return
+    async with db.tx() as conn:
+        await conn.executemany(
+            "INSERT INTO broadcast_exclusions (broadcast_id, user_id) "
+            "VALUES (?, ?) ON CONFLICT(broadcast_id, user_id) DO NOTHING",
+            [(broadcast_id, uid) for uid in ids],
+        )
+
+
+async def list_exclusion_ids(db: Database, broadcast_id: int) -> list[int]:
+    rows = await db.fetch_all(
+        "SELECT user_id FROM broadcast_exclusions WHERE broadcast_id=? ORDER BY user_id",
+        (broadcast_id,),
+    )
+    return [int(row["user_id"]) for row in rows]
+
+
+async def count_recipients(db: Database, broadcast_id: int) -> dict[str, int]:
+    """Aggregate recipient statuses for a broadcast into a single dict.
+
+    Always returns all six keys (including ``delivered``) so callers never
+    need to handle missing keys.
+    """
+    row = await db.fetch_one(
+        "SELECT "
+        "COUNT(CASE WHEN status='pending' THEN 1 END) AS pending, "
+        "COUNT(CASE WHEN status='sent' THEN 1 END) AS sent, "
+        "COUNT(CASE WHEN status='blocked' THEN 1 END) AS blocked, "
+        "COUNT(CASE WHEN status='failed' THEN 1 END) AS failed, "
+        "COUNT(CASE WHEN status='skipped' THEN 1 END) AS skipped, "
+        "COUNT(CASE WHEN status='delivered' THEN 1 END) AS delivered "
+        "FROM broadcast_recipients WHERE broadcast_id=?",
+        (broadcast_id,),
+    )
+    if row is None:
+        return {
+            "pending": 0,
+            "sent": 0,
+            "blocked": 0,
+            "failed": 0,
+            "skipped": 0,
+            "delivered": 0,
+        }
+    return {
+        "pending": int(row["pending"] or 0),
+        "sent": int(row["sent"] or 0),
+        "blocked": int(row["blocked"] or 0),
+        "failed": int(row["failed"] or 0),
+        "skipped": int(row["skipped"] or 0),
+        "delivered": int(row["delivered"] or 0),
+    }
