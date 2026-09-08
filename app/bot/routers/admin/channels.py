@@ -80,14 +80,14 @@ async def _render_tab(cb: CallbackQuery, db: Database, entry_type: str) -> None:
     """Re-render the entry list for a given tab type."""
     entries = await repo.list_channels_by_type(db, entry_type)
     text = render_entries_list(entries, entry_type)
-    await safe_edit(cb, text, parse_mode=PARSE_MODE, reply_markup=entries_kb(entries, entry_type))
+    await safe_edit(cb, text, reply_markup=entries_kb(entries, entry_type))
 
 
 @router.callback_query(F.data == C.CH_SUBSCRIPTION)
 async def cb_subscription_main(cb: CallbackQuery) -> None:
     await cb.answer()
     await safe_edit(
-        cb, M_MANDATORY_SUBSCRIPTION_TITLE, parse_mode=PARSE_MODE,
+        cb, M_MANDATORY_SUBSCRIPTION_TITLE,
         reply_markup=subscription_tabs_kb(),
     )
 
@@ -109,7 +109,7 @@ async def cb_add_channel_start(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
     await state.update_data(entry_type="channel")
     await state.set_state(MandatoryEntryFSM.ref)
-    await safe_edit(cb, M_ADD_ENTRY_PROMPT, parse_mode=PARSE_MODE)
+    await safe_edit(cb, M_ADD_ENTRY_PROMPT)
 
 
 @router.callback_query(F.data == C.CH_ADD_GROUP)
@@ -117,7 +117,7 @@ async def cb_add_group_start(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
     await state.update_data(entry_type="group")
     await state.set_state(MandatoryEntryFSM.ref)
-    await safe_edit(cb, M_ADD_ENTRY_PROMPT, parse_mode=PARSE_MODE)
+    await safe_edit(cb, M_ADD_ENTRY_PROMPT)
 
 
 @router.message(StateFilter(MandatoryEntryFSM.ref))
@@ -185,7 +185,7 @@ async def cb_toggle_entry(cb: CallbackQuery, db: Database) -> None:
     await cb.answer(M_ENTRY_TOGGLED)
     parsed = _int_pair(cb.data.removeprefix(C.CH_TOGGLE))
     if parsed is None:
-        await safe_edit(cb, M_ENTRY_NOT_FOUND, parse_mode=PARSE_MODE)
+        await safe_edit(cb, M_ENTRY_NOT_FOUND)
         return
     entry_type, entry_db_id = parsed
     await repo.toggle_channel(db, entry_db_id)
@@ -198,13 +198,12 @@ async def cb_delete_entry(cb: CallbackQuery, db: Database) -> None:
     await cb.answer()
     parsed = _int_pair(cb.data.removeprefix(C.CH_DELETE))
     if parsed is None:
-        await safe_edit(cb, M_ENTRY_NOT_FOUND, parse_mode=PARSE_MODE)
+        await safe_edit(cb, M_ENTRY_NOT_FOUND)
         return
     entry_type, entry_db_id = parsed
     await safe_edit(
         cb,
         M_ENTRY_DELETE_PROMPT,
-        parse_mode=PARSE_MODE,
         reply_markup=entry_delete_confirm_kb(entry_type, entry_db_id),
     )
 
@@ -214,7 +213,7 @@ async def cb_delete_entry_confirm(cb: CallbackQuery, db: Database) -> None:
     await cb.answer()
     parsed = _int_pair(cb.data.removeprefix(C.CH_DELETE_OK))
     if parsed is None:
-        await safe_edit(cb, M_ENTRY_NOT_FOUND, parse_mode=PARSE_MODE)
+        await safe_edit(cb, M_ENTRY_NOT_FOUND)
         return
     entry_type, entry_db_id = parsed
     await repo.delete_channel(db, entry_db_id)
