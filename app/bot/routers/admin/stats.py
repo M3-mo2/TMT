@@ -18,14 +18,16 @@ router = Router()
 async def cb_stats(cb: CallbackQuery, db: Database) -> None:
     await cb.answer()
     user_count = await repo.count_users(db)
-    channels = await repo.list_channels(db)
+    channel_count = await repo.count_channels_by_type(db, "channel")
+    group_count = await repo.count_channels_by_type(db, "group")
     jobs_count = await repo.count_jobs(db)
     completed_count = await repo.count_completed_jobs(db)
 
     lines = [
         "📊|إحصاءات البوت",
         f"👥|المستخدمون: <code>{user_count}</code>",
-        f"📢|قنوات الاشتراك: <code>{len(channels)}</code>",
+        f"📢|قنوات إجبارية: <code>{channel_count}</code>",
+        f"👥|مجموعات إجبارية: <code>{group_count}</code>",
         f"📦|إجمالي العمليات: <code>{jobs_count}</code>",
         f"✅|مكتملة: <code>{completed_count}</code>",
     ]

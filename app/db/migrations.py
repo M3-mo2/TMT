@@ -219,6 +219,18 @@ CREATE TABLE broadcast_templates (
 ALTER TABLE broadcasts ADD COLUMN ab_test_id INTEGER REFERENCES ab_tests(id);
 """
 
+# v9: Mandatory subscription type column + user gate flag.
+# `type` discriminates channels ("channel") from groups ("group") on the
+# same `channels` admin table (no owner scoping — global per PRD A1).
+# `gate_cleared` on users is the per-user cache of "has this user joined
+# all mandatory entries?"; reset (via ``reset_user_gates``) whenever the
+# mandatory set changes so users re-verify.  Both ALTER TABLE ADD COLUMN
+# are portable (RULES §6).
+_V9 = """
+ALTER TABLE users ADD COLUMN gate_cleared INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE channels ADD COLUMN type TEXT NOT NULL DEFAULT 'channel';
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
@@ -228,6 +240,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (6, _V6),
     (7, _V7),
     (8, _V8),
+    (9, _V9),
 ]
 
 

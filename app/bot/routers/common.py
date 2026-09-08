@@ -7,22 +7,27 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Router, F
+from aiogram import Bot, Router, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from app.bot.callbacks import MenuCB
+from app.bot.callbacks import GateCB, MenuCB
+from app.bot.gate import check_membership
 from app.bot.keyboards import help_back, main_menu
 from app.bot.texts import (
     M_CANCELED,
     M_ERR_GENERIC,
+    M_GATE_NOT_VERIFIED,
+    M_GATE_VERIFIED,
     M_HELP,
     PARSE_MODE,
     render_main_menu,
 )
 from app.core.account_service import AccountService
 from app.core.job_manager import JobManager
+from app.db import repositories as repo
+from app.db.database import Database
 from app.tg.login import LoginFlowManager
 
 logger = logging.getLogger(__name__)
@@ -57,6 +62,29 @@ async def delete_quietly(message: Message) -> None:
         await message.delete()
     except Exception:
         logger.info("user message deletion failed", exc_info=True)
+
+
+@router.callback_query(GateCB.filter(F.action == "verify"))
+async def cb_gate_verify(
+    query: CallbackQuery, callback_data: GateCB, db: Database, bot: Bot,
+    accounts: AccountService, jobs: JobManager,
+) -> None:
+    """User pressed '✅ تحقق من الاشتراك' on the gate screen."""
+    user_id = query.from_user.id if query.from_user else 0
+    mandatory = await repo.active_channels(db)
+    if not mandatory:
+        await query.answer()
+    elif await check_membership(bot, user_id, mandatory):
+        await repo.set_gate_cleared(db, user_id)
+        await query.answer(M_GATE_VERIFIED)
+    else:
+        await query.answer(M_GATE_NOT_VERIFIED, show_alert=True)
+        return
+    account_count = len(await accounts.list(user_id))
+    job_count = len(await jobs.list_jobs(user_id, limit=100))
+    display_name = query.from_user.full_name if query.from_user else "مستخدم"
+    text = render_main_menu(display_name, account_count, job_count, user_id)
+    await edit_or_answer(query, text, main_menu())
 
 
 @router.message(CommandStart())

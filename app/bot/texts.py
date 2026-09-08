@@ -32,6 +32,14 @@ __all__ = [
     "M_WIZARD_CANCELLED", "M_TRANSFER_STARTED", "M_JOBS_EMPTY",
     "M_JOB_CANCELLED", "M_JOB_NOT_CANCELLABLE", "M_INTERRUPTED_NOTE",
     "M_DELETED_ACCOUNT",
+    "BUT_MANDATORY_SUBSCRIPTION", "BUT_CHANNELS_TAB", "BUT_GROUPS_TAB",
+    "BUT_ADD_CHANNEL", "BUT_ADD_GROUP", "BUT_VERIFY_SUBSCRIPTION",
+    "M_MANDATORY_SUBSCRIPTION_TITLE", "M_NO_CHANNELS", "M_NO_GROUPS",
+    "M_ADD_ENTRY_PROMPT", "M_ENTRY_ADDED", "M_ENTRY_DELETED", "M_ENTRY_TOGGLED",
+    "M_ENTRY_NOT_FOUND", "M_ENTRY_DELETE_PROMPT", "M_ENTRY_LINK_PROMPT",
+    "M_GATE_BLOCKED", "M_GATE_VERIFIED", "M_GATE_NOT_VERIFIED",
+    "M_GATE_PLEASE_VERIFY", "M_GATE_BLOCKED_ALERT",
+    "render_gate_screen", "render_entries_list",
     "M_SETTINGS_TITLE", "M_SETTINGS_SUMMARY", "M_SETTING_PROMPT",
     "M_SETTING_INVALID", "M_SETTING_SAVED", "render_settings",
     "esc", "mask_phone", "normalize_phone", "render_main_menu", "render_admin_menu", "render_user_card", "render_preflight", "render_account_card",
@@ -184,7 +192,71 @@ M_ERR_GENERIC = "حدث خطأ غير متوقع، أعد المحاولة."
 M_ACCOUNT_BUSY = "× الحساب مشغول الآن — عملية نقل جارية عليه، ألغِها أولاً."
 M_DELETED_ACCOUNT = "حساب محذوف"
 
-# ---------------------------------------------------------------- accounts
+# ---------------------------------------------------------------- mandatory subscription / gate
+
+# Admin menu
+BUT_MANDATORY_SUBSCRIPTION = "↢ الاشتراك الإجباري"
+
+# Admin tabs
+BUT_CHANNELS_TAB = "› القنوات"
+BUT_GROUPS_TAB = "› المجموعات"
+
+# Admin add/delete/toggle
+BUT_ADD_CHANNEL = "↢ إضافة قناة"
+BUT_ADD_GROUP = "↢ إضافة مجموعة"
+BUT_VERIFY_SUBSCRIPTION = "✅ تحقق من الاشتراك"
+
+# Admin screens
+M_MANDATORY_SUBSCRIPTION_TITLE = "<b>↢ الاشتراك الإجباري</b>"
+M_NO_CHANNELS = "× لم يتم إضافة قنوات إجبارية بعد."
+M_NO_GROUPS = "× لم يتم إضافة مجموعات إجبارية بعد."
+M_ADD_ENTRY_PROMPT = "↢ أرسل معرف القناة/المجموعة أو الرابط (مثال: @name أو t.me/name):"
+M_ENTRY_ADDED = "✅ تم إضافة العنصر."
+M_ENTRY_DELETED = "✅ تم حذف العنصر."
+M_ENTRY_TOGGLED = "✅ تم تحديث الحالة."
+M_ENTRY_NOT_FOUND = "× لم يتم العثور على القناة/المجموعة. تأكد من صحة الرابط أو المعرف."
+
+# User gate screen
+M_GATE_BLOCKED = (
+    "<b>↢ الاشتراك الإجباري</b>\n"
+    "يرجى الاشتراك أولاً في القنوات والمجموعات التالية:"
+)
+M_GATE_VERIFIED = "✅ تم التحقق من الاشتراك! يمكنك الآن استخدام البوت."
+M_GATE_NOT_VERIFIED = "× لم يتم العثور على جميع الاشتراكات. يرجى الاشتراك أولاً ثم أعد المحاولة."
+M_GATE_PLEASE_VERIFY = "↢ يرجى التحقق من الاشتراك أولاً."
+M_GATE_BLOCKED_ALERT = "↢ يجب الاشتراك في القنوات المطلوبة أولاً. استخدم الزر في الدردشة."
+
+
+def render_gate_screen(mandatory: list[dict[str, Any]]) -> str:
+    """Build the gate screen text listing each mandatory channel/group with a
+    join link."""
+    lines = [M_GATE_BLOCKED]
+    for entry in mandatory:
+        icon = "👤" if entry.get("type") == "channel" else "🔰"
+        lines.append(
+            f"{icon} {esc(entry['title'])} — "
+            f"<a href='{entry['invite_link']}'>انضم ↢</a>"
+        )
+    lines.append("")
+    lines.append(M_GATE_PLEASE_VERIFY)
+    return "\n".join(lines)
+
+
+M_ENTRY_DELETE_PROMPT = "× هل أنت متأكد من حذف هذا العنصر؟"
+M_ENTRY_LINK_PROMPT = "× لم يتم العثور على رابط دعوة. أرسل الرابط الأن:"
+
+
+def render_entries_list(entries: list[dict[str, Any]], entry_type: str) -> str:
+    """Render the admin entry list for a single tab (channels or groups)."""
+    glyph = "📢" if entry_type == "channel" else "👥"
+    label = "القنوات" if entry_type == "channel" else "المجموعات"
+    if not entries:
+        return M_NO_CHANNELS if entry_type == "channel" else M_NO_GROUPS
+    lines = [f"{glyph} {label} الإجبارية:"]
+    for e in entries:
+        status = "✅" if e["is_active"] else "❌"
+        lines.append(f"{status} {esc(e['title'])} — {esc(e['invite_link'])}")
+    return "\n".join(lines)
 
 M_ACCOUNTS_TITLE = "<b>حساباتك المضافه فالبوت ↓</b>"
 M_ACCOUNTS_EMPTY = "لا توجد حسابات مضافة بعد.\nأضف حسابك الأول للبدء."

@@ -112,7 +112,7 @@ async def test_migration_v5_applies_after_reconnect(tmp_path) -> None:
         versions = [r["version"] for r in await db.fetch_all(
             "SELECT version FROM schema_migrations ORDER BY version"
         )]
-        assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
         cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(broadcasts)")}
         assert "avg_rate" in cols

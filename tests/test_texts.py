@@ -266,3 +266,34 @@ def test_user_detail_kb_exposes_controls_per_account() -> None:
     assert f"{C.USER_TOGGLE_BLOCK}5" in actions
     assert f"{C.USER_NOTIFY}5" in actions
     assert rows[3][0].callback_data == C.USERS
+
+
+def test_render_gate_screen_lists_mandatory_entries() -> None:
+    mandatory = [
+        {"title": "قناة أ", "invite_link": "https://t.me/a", "type": "channel"},
+        {"title": "<script>evil</script>", "invite_link": "https://t.me/b", "type": "group"},
+    ]
+    rendered = texts.render_gate_screen(mandatory)
+    assert rendered.startswith(texts.M_GATE_BLOCKED)
+    assert "قناة أ" in rendered
+    assert "<script>" not in rendered  # escaped
+    assert "&lt;script&gt;" in rendered
+    assert texts.M_GATE_PLEASE_VERIFY in rendered
+
+
+def test_render_entries_list_empty_and_populated() -> None:
+    assert texts.render_entries_list([], "channel") == texts.M_NO_CHANNELS
+    assert texts.render_entries_list([], "group") == texts.M_NO_GROUPS
+    entries = [
+        {"title": "Ch", "invite_link": "l", "type": "channel", "is_active": 1},
+        {"title": "Grp", "invite_link": "l2", "type": "group", "is_active": 0},
+    ]
+    rendered = texts.render_entries_list(entries, "channel")
+    assert "🔄" not in rendered  # no toggle glyph in list text
+    assert "Ch" in rendered
+
+
+def test_gate_callback_data_round_trips() -> None:
+    from app.bot.callbacks import GateCB
+    packed = GateCB(action="verify").pack()
+    assert packed == "gate:verify"

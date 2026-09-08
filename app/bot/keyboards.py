@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.bot.callbacks import AccountCB, JobCB, MenuCB, SettingsCB, TransferCB
+from app.bot.callbacks import AccountCB, GateCB, JobCB, MenuCB, SettingsCB, TransferCB
 from app.bot.texts import (
     BUT_ACCOUNTS,
     BUT_ADD_ACCOUNT,
@@ -17,9 +19,9 @@ from app.bot.texts import (
     BUT_JOBS,
     BUT_MAIN,
     BUT_REFRESH,
-    BUT_SETTINGS,
     BUT_START_TRANSFER,
     BUT_TRANSFER,
+    BUT_VERIFY_SUBSCRIPTION,
 )
 from app.bot.texts import esc as _esc
 from app.core.models import Job, JobStatus
@@ -39,6 +41,7 @@ __all__ = [
     "help_back",
     "settings_keyboard",
     "settings_back",
+    "gate_kb",
 ]
 
 Row = list[InlineKeyboardButton]
@@ -168,3 +171,15 @@ def settings_back() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[_btn(BUT_BACK, SettingsCB(action="main"))]]
     )
+
+
+def gate_kb(mandatory: list[dict[str, Any]]) -> InlineKeyboardMarkup:
+    """Gate screen keyboard: one URL button per mandatory entry + verify."""
+    rows: list[Row] = []
+    for entry in mandatory:
+        icon = "📢" if entry.get("type") == "channel" else "👥"
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {entry['title']}", url=entry["invite_link"],
+        )])
+    rows.append([_btn(BUT_VERIFY_SUBSCRIPTION, GateCB(action="verify"))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

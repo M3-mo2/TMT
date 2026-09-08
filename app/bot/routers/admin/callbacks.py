@@ -21,11 +21,14 @@ USER_DEL_ACC_CONFIRM = f"{PREFIX}:u:del:"
 USER_DEL_ACC_OK = f"{PREFIX}:u:delok:"
 
 # channels (mandatory subscription)
-CHANNELS = f"{PREFIX}:channels"
-CHANNEL_ADD = f"{PREFIX}:ch:add"
-CHANNEL_TOGGLE = f"{PREFIX}:ch:tg:"
-CHANNEL_DEL = f"{PREFIX}:ch:del:"
-CHANNEL_DEL_OK = f"{PREFIX}:ch:delok:"
+CH_SUBSCRIPTION = f"{PREFIX}:ch"
+CH_TAB_CHANNELS = f"{PREFIX}:ch:tab:channels"
+CH_TAB_GROUPS = f"{PREFIX}:ch:tab:groups"
+CH_ADD_CHANNEL = f"{PREFIX}:ch:add:channel"
+CH_ADD_GROUP = f"{PREFIX}:ch:add:group"
+CH_TOGGLE = f"{PREFIX}:ch:tg:"
+CH_DELETE = f"{PREFIX}:ch:del:"
+CH_DELETE_OK = f"{PREFIX}:ch:delok:"
 
 # stats
 STATS = f"{PREFIX}:stats"

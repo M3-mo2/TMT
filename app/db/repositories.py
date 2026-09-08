@@ -422,17 +422,17 @@ async def audit(
 
 async def list_channels(db: Database) -> list[dict[str, Any]]:
     rows = await db.fetch_all(
-        "SELECT id, channel_id, title, invite_link, is_active FROM channels ORDER BY id"
+        "SELECT id, channel_id, title, invite_link, is_active, type FROM channels ORDER BY type, id"
     )
     return [dict(row) for row in rows]
 
 
 async def add_channel(
-    db: Database, *, channel_id: int, title: str, invite_link: str
+    db: Database, *, channel_id: int, title: str, invite_link: str, entry_type: str = "channel"
 ) -> int:
     return await db.execute(
-        "INSERT INTO channels (channel_id, title, invite_link, is_active) VALUES (?, ?, ?, 1)",
-        (channel_id, title, invite_link),
+        "INSERT INTO channels (channel_id, title, invite_link, type, is_active) VALUES (?, ?, ?, ?, 1)",
+        (channel_id, title, invite_link, entry_type),
     )
 
 
@@ -452,9 +452,39 @@ async def delete_channel(db: Database, channel_db_id: int) -> bool:
 
 async def active_channels(db: Database) -> list[dict[str, Any]]:
     rows = await db.fetch_all(
-        "SELECT channel_id, title, invite_link FROM channels WHERE is_active=1 ORDER BY id"
+        "SELECT channel_id, title, invite_link, type FROM channels WHERE is_active=1 ORDER BY type, id"
     )
     return [dict(row) for row in rows]
+
+
+async def list_channels_by_type(db: Database, entry_type: str) -> list[dict[str, Any]]:
+    rows = await db.fetch_all(
+        "SELECT id, channel_id, title, invite_link, is_active, type FROM channels WHERE type=? ORDER BY id",
+        (entry_type,),
+    )
+    return [dict(row) for row in rows]
+
+
+async def count_channels_by_type(db: Database, entry_type: str) -> int:
+    row = await db.fetch_one(
+        "SELECT COUNT(*) AS c FROM channels WHERE type=? AND is_active=1",
+        (entry_type,),
+    )
+    return int(row["c"]) if row else 0
+
+
+async def is_gate_cleared(db: Database, user_id: int) -> bool:
+    row = await db.fetch_one("SELECT gate_cleared FROM users WHERE id=?", (user_id,))
+    return bool(row["gate_cleared"]) if row else False
+
+
+async def set_gate_cleared(db: Database, user_id: int) -> None:
+    await db.execute("UPDATE users SET gate_cleared=1 WHERE id=?", (user_id,))
+
+
+async def reset_user_gates(db: Database) -> None:
+    """Reset gate_cleared for all users — call when mandatory channels change."""
+    await db.execute("UPDATE users SET gate_cleared=0")
 
 
 async def count_users(db: Database) -> int:

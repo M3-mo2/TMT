@@ -1,4 +1,5 @@
-"""Outer middleware: user upsert, block gate, private-chat gate (PRD A1).
+"""Outer middleware: user upsert, block gate, mandatory-subscription gate,
+private-chat gate (PRD A1).
 
 Runs on every Update before any handler. Injects ``db`` into the handler data.
 Non-private chats get an answer only for ``/start``; everything else in groups
@@ -14,7 +15,16 @@ from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, Update
 
-from app.bot.texts import M_BLOCKED, M_PRIVATE_ONLY, PARSE_MODE
+from app.bot.gate import check_membership
+from app.bot.keyboards import gate_kb
+from app.bot.texts import (
+    M_BLOCKED,
+    M_GATE_BLOCKED_ALERT,
+    M_GATE_PLEASE_VERIFY,
+    M_PRIVATE_ONLY,
+    PARSE_MODE,
+    render_gate_screen,
+)
 from app.db import repositories as repo
 from app.db.database import Database
 
@@ -26,6 +36,7 @@ __all__ = ["UserGateMiddleware"]
 class UserGateMiddleware(BaseMiddleware):
     def __init__(self, db: Database) -> None:
         self._db = db
+        self._gate_shown: set[int] = set()
 
     async def __call__(
         self,
@@ -49,6 +60,26 @@ class UserGateMiddleware(BaseMiddleware):
             await self._refuse(inner)
             return None
 
+        # Allow the gate-verify callback to reach the handler even before the
+        # gate is cleared (so the user can prove membership).
+        if isinstance(inner, CallbackQuery) and inner.data == "gate:verify":
+            data["db"] = self._db
+            return await handler(event, data)
+
+        # Mandatory subscription gate
+        if not await repo.is_gate_cleared(self._db, user.id):
+            mandatory = await repo.active_channels(self._db)
+            if mandatory:
+                bot = data.get("bot")
+                if bot is not None:
+                    all_joined = await check_membership(bot, user.id, mandatory)
+                    if all_joined:
+                        await repo.set_gate_cleared(self._db, user.id)
+                        self._gate_shown.discard(user.id)
+                    else:
+                        await self._show_gate(inner, bot, mandatory, user.id)
+                        return None
+
         chat = getattr(inner, "chat", None) or getattr(
             getattr(inner, "message", None), "chat", None
         )
@@ -60,6 +91,26 @@ class UserGateMiddleware(BaseMiddleware):
 
         data["db"] = self._db
         return await handler(event, data)
+
+    async def _show_gate(
+        self,
+        inner: Message | CallbackQuery,
+        bot: Any,
+        mandatory: list[dict[str, Any]],
+        user_id: int,
+    ) -> None:
+        """Send (or remind) the mandatory-subscription gate screen."""
+        if isinstance(inner, CallbackQuery):
+            # Inline button tap while blocked — just alert, don't re-edit.
+            await inner.answer(M_GATE_BLOCKED_ALERT, show_alert=True)
+        else:
+            # New message — show the full gate screen once per session.
+            if user_id in self._gate_shown:
+                await inner.answer(M_GATE_PLEASE_VERIFY, parse_mode=PARSE_MODE)
+            else:
+                text = render_gate_screen(mandatory)
+                await inner.answer(text, parse_mode=PARSE_MODE, reply_markup=gate_kb(mandatory))
+                self._gate_shown.add(user_id)
 
     @staticmethod
     async def _refuse(inner: Message | CallbackQuery) -> None:

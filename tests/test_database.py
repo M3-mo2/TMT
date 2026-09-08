@@ -15,7 +15,7 @@ from app.db.migrations import _V1, _split_statements
 
 async def test_connect_applies_migrations(db: Database) -> None:
     rows = await db.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
-    assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     tables = {
         r["name"]
         for r in await db.fetch_all(
@@ -40,7 +40,7 @@ async def test_reconnect_is_idempotent(tmp_path: Path) -> None:
     await db2.connect()
     try:
         rows = await db2.fetch_all("SELECT version FROM schema_migrations")
-        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     finally:
         await db2.close()
 
@@ -154,7 +154,7 @@ async def test_v1_database_upgrades_to_v2_preserving_history(tmp_path: Path) -> 
     await db.connect()
     try:
         rows = await db.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
-        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
         job = await db.fetch_one(
             "SELECT account_id, status, invited FROM jobs WHERE id=9"
         )
@@ -166,3 +166,63 @@ async def test_v1_database_upgrades_to_v2_preserving_history(tmp_path: Path) -> 
         assert job is not None and job["account_id"] is None
     finally:
         await db.close()
+
+
+# ---------------------------------------------------------------- v9: mandatory subscription
+
+
+async def test_migration_v9_adds_gate_columns(db: Database) -> None:
+    cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(users)")}
+    assert "gate_cleared" in cols
+    cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(channels)")}
+    assert "type" in cols
+
+
+async def test_v9_gate_cleared_defaults_to_zero(db: Database) -> None:
+    await db.execute(
+        "INSERT INTO users (id, created_at, updated_at) VALUES (?, ?, ?)",
+        (1, "t", "t"),
+    )
+    row = await db.fetch_one("SELECT gate_cleared FROM users WHERE id=1")
+    assert row is not None and row["gate_cleared"] == 0
+
+
+async def test_v9_channel_type_defaults_to_channel(db: Database) -> None:
+    await db.execute(
+        "INSERT INTO channels (channel_id, title, invite_link) VALUES (?, ?, ?)",
+        (-1001, "Test", "https://t.me/test"),
+    )
+    row = await db.fetch_one("SELECT type FROM channels WHERE channel_id=-1001")
+    assert row is not None and row["type"] == "channel"
+
+
+async def test_reset_user_gates_clears_all(db: Database) -> None:
+    from app.db import repositories as repo
+    for uid in (1, 2, 3):
+        await db.execute(
+            "INSERT INTO users (id, created_at, updated_at, gate_cleared) VALUES (?, ?, ?, 1)",
+            (uid, "t", "t"),
+        )
+    assert await repo.is_gate_cleared(db, 1)
+    assert await repo.is_gate_cleared(db, 2)
+    await repo.reset_user_gates(db)
+    assert not await repo.is_gate_cleared(db, 1)
+    assert not await repo.is_gate_cleared(db, 2)
+
+
+async def test_list_channels_by_type_and_count(db: Database) -> None:
+    from app.db import repositories as repo
+    await repo.add_channel(db, channel_id=-1001, title="ChA", invite_link="l1", entry_type="channel")
+    await repo.add_channel(db, channel_id=-1002, title="ChB", invite_link="l2", entry_type="channel")
+    await repo.add_channel(db, channel_id=-1003, title="GrA", invite_link="l3", entry_type="group")
+    channels = await repo.list_channels_by_type(db, "channel")
+    assert len(channels) == 2
+    assert all(c["type"] == "channel" for c in channels)
+    groups = await repo.list_channels_by_type(db, "group")
+    assert len(groups) == 1
+    assert groups[0]["type"] == "group"
+    assert await repo.count_channels_by_type(db, "channel") == 2
+    assert await repo.count_channels_by_type(db, "group") == 1
+    # toggle a channel inactive — count should drop
+    await repo.toggle_channel(db, channels[0]["id"])
+    assert await repo.count_channels_by_type(db, "channel") == 1

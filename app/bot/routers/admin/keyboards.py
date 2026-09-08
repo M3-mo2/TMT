@@ -4,7 +4,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.bot.routers.admin import callbacks as C
 from app.core.broadcast_models import AudienceFilter
-from app.bot.texts import user_full_name
+from app.bot.texts import esc as _esc, user_full_name
 
 
 def _btn(text: str, data: str) -> InlineKeyboardButton:
@@ -17,7 +17,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 _btn("👥 المستخدمون", C.USERS),
-                _btn("📢 القنوات", C.CHANNELS),
+                _btn("↢ الاشتراك الإجباري", C.CH_SUBSCRIPTION),
             ],
             [
                 _btn("📊 الإحصاءات", C.STATS),
@@ -77,24 +77,39 @@ def account_del_confirm_kb(account_id: int, uid: int) -> InlineKeyboardMarkup:
     )
 
 
-def channels_kb(channels: list[dict]) -> InlineKeyboardMarkup:
-    """List of mandatory channels with toggle/delete actions."""
+def subscription_tabs_kb() -> InlineKeyboardMarkup:
+    """Mandatory-subscription root: pick a tab (channels or groups)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("📢 القنوات", C.CH_TAB_CHANNELS), _btn("👥 المجموعات", C.CH_TAB_GROUPS)],
+            [_btn("› رجوع", C.MENU)],
+        ]
+    )
+
+
+def entries_kb(entries: list[dict], entry_type: str) -> InlineKeyboardMarkup:
+    """List entries of one type with toggle + delete per row, plus add."""
     rows = []
-    for ch in channels:
-        status = "✅" if ch["is_active"] else "❌"
+    for e in entries:
+        icon = "📢" if entry_type == "channel" else "👥"
+        status = "✅" if e["is_active"] else "❌"
         rows.append([
-            _btn(f"{status} {ch['title']}", f"{C.CHANNEL_TOGGLE}{ch['id']}"),
+            _btn(f"{status} {icon} {_esc(e['title'])}", f"{C.CH_TOGGLE}{entry_type}:{e['id']}"),
+            _btn("×", f"{C.CH_DELETE}{entry_type}:{e['id']}"),
         ])
-    rows.append([_btn("➕ إضافة قناة", C.CHANNEL_ADD)])
-    rows.append([_btn("› رجوع", C.MENU)])
+    if entry_type == "channel":
+        rows.append([_btn("↢ إضافة قناة", C.CH_ADD_CHANNEL)])
+    else:
+        rows.append([_btn("↢ إضافة مجموعة", C.CH_ADD_GROUP)])
+    rows.append([_btn("› رجوع", C.CH_SUBSCRIPTION)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def channel_delete_confirm_kb(channel_id: int) -> InlineKeyboardMarkup:
+def entry_delete_confirm_kb(entry_type: str, entry_db_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_btn("× تأكيد الحذف", f"{C.CHANNEL_DEL_OK}{channel_id}")],
-            [_btn("› رجوع", C.CHANNELS)],
+            [_btn("× تأكيد الحذف", f"{C.CH_DELETE_OK}{entry_type}:{entry_db_id}")],
+            [_btn("› رجوع", f"{C.CH_TAB_CHANNELS}" if entry_type == "channel" else f"{C.CH_TAB_GROUPS}")],
         ]
     )
 
