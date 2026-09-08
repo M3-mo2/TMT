@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.bot.routers.admin import callbacks as C
+from app.core.broadcast_models import AudienceFilter
 from app.bot.texts import user_full_name
 
 
@@ -110,10 +111,83 @@ def stats_kb() -> InlineKeyboardMarkup:
 def broadcast_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_btn("📤إرسال رسالة", C.BCAST_COMPOSE)],
+            [_btn("📤إرسال رسالة", C.BCAST_NEW)],
             [_btn("› رجوع", C.MENU)],
         ]
     )
+
+
+def broadcast_center_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("✏️ مسودة جديدة", C.BCAST_NEW)],
+            [_btn("📜 التاريخ", C.BCAST_HISTORY)],
+            [_btn("› رجوع للقائمة", C.MENU)],
+        ]
+    )
+
+
+def broadcast_target_kb(filters: AudienceFilter) -> InlineKeyboardMarkup:
+    rows = []
+    rows.append([
+        _btn(f"✓ {filters.target}" if filters.target == "all" else f"  all", f"{C.BCAST_TARGET_X}all"),
+        _btn(f"✓ active" if filters.target == "active" else "  active", f"{C.BCAST_TARGET_X}active"),
+        _btn(f"✓ inactive" if filters.target == "inactive" else "  inactive", f"{C.BCAST_TARGET_X}inactive"),
+        _btn(f"✓ blocked" if filters.target == "blocked" else "  blocked", f"{C.BCAST_TARGET_X}blocked"),
+    ])
+    rows.append([
+        _btn(f"⟁ min {filters.account_count_min or '—'}", f"{C.BCAST_TARGET_X}accounts_min"),
+        _btn(f"⟁ max {filters.account_count_max or '—'}", f"{C.BCAST_TARGET_X}accounts_max"),
+    ])
+    rows.append([
+        _btn(f"⟡ reg {filters.registered_days_ago or '—'}", f"{C.BCAST_TARGET_X}registered_days"),
+        _btn(f"⟡ seen {filters.last_seen_days_ago or '—'}", f"{C.BCAST_TARGET_X}last_seen"),
+    ])
+    rows.append([
+        _btn(f"{'✓' if filters.exclude_admins else '×'} admins", f"{C.BCAST_TARGET_X}exclude_admins"),
+        _btn(f"{'✓' if filters.exclude_previously_contacted else '×'} prev", f"{C.BCAST_TARGET_X}exclude_previous"),
+    ])
+    rows.append([_btn("🧪 إرسال تجريبي", C.BCAST_TEST_SEND)])
+    rows.append([_btn("🔍 معاينة", C.BCAST_DRY_RUN)])
+    rows.append([_btn("▶ إرسال الآن", C.BCAST_SEND_NOW)])
+    rows.append([_btn("⏰ جدولة", C.BCAST_SCHEDULE)])
+    rows.append([_btn("› رجوع", C.BCAST)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def broadcast_confirm_kb(campaign_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("▶ إرسال الآن", C.BCAST_SEND_NOW)],
+            [_btn("⏰ جدولة", C.BCAST_SCHEDULE)],
+            [_btn("🧪 تجريبة", C.BCAST_TEST_SEND)],
+            [_btn("× إلغاء", f"{C.BCAST_VIEW}{campaign_id}")],
+        ]
+    )
+
+
+def broadcast_live_kb(campaign_id: int, status: str) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            _btn("⏸ إيقاف", f"{C.BCAST_PAUSE_LIVE}{campaign_id}"),
+            _btn("▶ استأنف", f"{C.BCAST_RESUME_LIVE}{campaign_id}"),
+            _btn("× إلغاء", f"{C.BCAST_CANCEL_LIVE}{campaign_id}"),
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def broadcast_history_kb(page: int, total_pages: int) -> InlineKeyboardMarkup:
+    rows = []
+    nav = []
+    if page > 0:
+        nav.append(_btn("← السابق", f"{C.BCAST_PAGE}{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(_btn("التالي →", f"{C.BCAST_PAGE}{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([_btn("› رجوع", C.BCAST)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def settings_kb() -> InlineKeyboardMarkup:

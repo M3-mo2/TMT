@@ -13,6 +13,7 @@ import html
 from typing import Any, Iterable
 
 from app.core.models import Account, AccountStatus, Check, CheckStatus, Job, JobStatus, UserStats
+from app.core.broadcast_models import AudienceFilter
 
 PARSE_MODE = "HTML"
 
@@ -37,6 +38,8 @@ __all__ = [
     "render_jobs_list", "render_job_card", "render_progress_card",
     "render_final_summary", "job_glyph", "job_label", "account_status_label",
     "skip_reason_label", "phase_label",
+    "render_broadcast_center", "render_audience_builder",
+    "render_bcast_preview", "render_bcast_progress", "render_bcast_summary",
 ]
 
 # ---------------------------------------------------------------- decorations
@@ -450,3 +453,160 @@ def render_final_summary(
 def esc(value: str) -> str:
     """Escape user-provided text for HTML interpolation (RULES §7)."""
     return html.escape(str(value), quote=True)
+
+
+# ---------------------------------------------------------------- broadcasts
+
+_BCAST_STATUS_VIEW: dict[str, tuple[str, str]] = {
+    "draft": (GLYPH_INFO, "مسودة"),
+    "scheduled": (GLYPH_INFO, "مجدولة"),
+    "running": (GLYPH_INFO, "جارية"),
+    "completed": (GLYPH_PASS, "مكتملة"),
+    "cancelled": (GLYPH_NEUTRAL, "ملغاة"),
+    "failed": (GLYPH_FAIL, "فاشلة"),
+    "interrupted": (GLYPH_NEUTRAL, "متوقفة"),
+}
+
+
+def bcast_status_label(status: str) -> str:
+    glyph, label = _BCAST_STATUS_VIEW.get(status, (GLYPH_WARN, status))
+    return f"{glyph} {label}"
+
+
+def _format_campaign_line(campaign: dict[str, Any]) -> str:
+    glyph = _BCAST_STATUS_VIEW.get(campaign.get("status", ""), (GLYPH_INFO,))[0]
+    label = campaign.get("label") or "بدون عنوان"
+    return f"{glyph} <code>#{campaign['id']}</code> {esc(label)}"
+
+
+def render_broadcast_center(
+    drafts: list[dict[str, Any]],
+    scheduled: list[dict[str, Any]],
+    running: list[dict[str, Any]],
+    completed: list[dict[str, Any]],
+) -> str:
+    lines = ["⟡ لوحة البث"]
+    lines.append("")
+
+    if drafts:
+        lines.append("⟡ المسودات:")
+        for b in drafts:
+            lines.append(f"› {_format_campaign_line(b)}")
+    else:
+        lines.append("⟡ لا توجد مسودات.")
+    lines.append("")
+
+    if scheduled:
+        lines.append("= المجدولة:")
+        for b in scheduled:
+            lines.append(f"› {_format_campaign_line(b)}")
+    else:
+        lines.append("= لا توجد مجدولة.")
+    lines.append("")
+
+    if running:
+        lines.append("⋆ الجارية:")
+        for b in running:
+            lines.append(f"› {_format_campaign_line(b)}")
+    else:
+        lines.append("⋆ لا توجد جارية.")
+    lines.append("")
+
+    if completed:
+        lines.append("✓ المكتملة:")
+        for b in completed:
+            lines.append(f"› {_format_campaign_line(b)}")
+    else:
+        lines.append("✓ لا توجد مكتملة.")
+    lines.append("")
+    lines.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(lines)
+
+
+def render_audience_builder(filters: AudienceFilter, user_count: int) -> str:
+    def _flag(val: bool) -> str:
+        return "✓" if val else "×"
+
+    lines = ["⟡ بناء الجمهور المستهدف:"]
+    lines.append(f"› الهدف ↼ <code>{esc(filters.target)}</code>")
+    lines.append(f"{_flag(filters.with_accounts)} لديهم حسابات")
+    lines.append(f"{_flag(filters.without_accounts)} بلا حسابات")
+    lines.append(
+        f"› حسابات >= <code>{filters.account_count_min if filters.account_count_min is not None else '—'}</code>"
+    )
+    lines.append(
+        f"› حسابات <= <code>{filters.account_count_max if filters.account_count_max is not None else '—'}</code>"
+    )
+    lines.append(
+        f"› مسجل منذ <code>{f'{filters.registered_days_ago} يوم' if filters.registered_days_ago else '—'}</code>"
+    )
+    lines.append(
+        f"› آخر ظهور <code>{f'{filters.last_seen_days_ago} يوم' if filters.last_seen_days_ago else '—'}</code>"
+    )
+    lines.append(f"{_flag(filters.exclude_admins)} إخفاء المدراء")
+    lines.append(f"{_flag(filters.exclude_previously_contacted)} استبعد المرسل إليهم")
+    lines.append("")
+    lines.append(f"⟡ عدد المستخدمين المستهدفين ↼ <code>{user_count}</code>")
+    return "\n".join(lines)
+
+
+def render_bcast_preview(
+    campaign: dict[str, Any], recipient_count: int, est_duration: float
+) -> str:
+    mode_label = "نسخة" if campaign.get("mode") == "copy" else "مخصصة"
+    lines = [
+        "<b>⟡ معاينة البث</b>",
+        "",
+        f"› العنوان ↼ <code>{esc(campaign.get('label') or 'بدون عنوان')}</code>",
+        f"› الوضع ↼ <code>{mode_label}</code>",
+        f"› المستلمون ↼ <code>{recipient_count}</code>",
+        f"› التقدير الزمني ↼ <code>{est_duration:.0f}</code> ثانية",
+    ]
+    lines.append("")
+    lines.append("⇜ اضغط إرسال الآن للبدء أو جدولة للموعد اللاحق.")
+    return "\n".join(lines)
+
+
+def render_bcast_progress(campaign: dict[str, Any], rate: float) -> str:
+    total = campaign.get("total_recipients", 0) or 0
+    sent = campaign.get("sent", 0) or 0
+    blocked = campaign.get("blocked", 0) or 0
+    failed = campaign.get("failed", 0) or 0
+    skipped = campaign.get("skipped", 0) or 0
+    processed = sent + blocked + failed + skipped
+    pct = f"{(processed / total * 100):.0f}%" if total else "0%"
+    lines = [
+        f"⟡ بث: <b>#{campaign.get('id', '?')}</b>",
+        f"› التقدم ↼ <code>{processed}</code>/<code>{total}</code> ({pct})",
+        f"✓ أرسلت ↼ <code>{sent}</code>",
+        f"× محظور ↼ <code>{blocked}</code>",
+        f"! فشل ↼ <code>{failed}</code>",
+        f"› تم تخطيه ↼ <code>{skipped}</code>",
+        f"= السرعة ↼ <code>{rate:.1f}</code>/ث",
+    ]
+    return "\n".join(lines)
+
+
+def render_bcast_summary(campaign: dict[str, Any]) -> str:
+    glyph, status_label = _BCAST_STATUS_VIEW.get(
+        campaign.get("status", ""), (GLYPH_WARN, campaign.get("status", ""))
+    )
+    lines = [
+        f"<b>⟡ الحملة #{campaign.get('id', '?')}</b>",
+        "",
+        f"› العنوان ↼ <code>{esc(campaign.get('label') or 'بدون عنوان')}</code>",
+        f"{glyph} الحالة ↼ <code>{status_label}</code>",
+        f"✓ أرسلت ↼ <code>{campaign.get('sent', 0) or 0}</code>",
+        f"× محظور ↼ <code>{campaign.get('blocked', 0) or 0}</code>",
+        f"! فشل ↼ <code>{campaign.get('failed', 0) or 0}</code>",
+        f"› تم تخطيه ↼ <code>{campaign.get('skipped', 0) or 0}</code>",
+        f"⟡ الإجمالي ↼ <code>{campaign.get('total_recipients', 0) or 0}</code>",
+        f"= متوسط السرعة ↼ <code>{campaign.get('avg_rate') or '—'}</code>/ث",
+    ]
+    if campaign.get("scheduled_for"):
+        lines.append(f"› مواعيد ↼ <code>{esc(campaign['scheduled_for'])}</code>")
+    if campaign.get("error"):
+        lines.append(f"› السبب ↼ {esc(campaign['error'])}")
+    lines.append("")
+    lines.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(lines)

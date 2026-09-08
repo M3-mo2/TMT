@@ -18,6 +18,7 @@ from app.bot import build_dispatcher
 from app.bot.reporter import Reporter
 from app.config import Config
 from app.core.account_service import AccountService
+from app.core.broadcast import Broadcaster
 from app.core.events import EventBus
 from app.core.job_manager import JobManager
 from app.core.settings import UserSettings
@@ -47,6 +48,7 @@ async def run(config: Config) -> None:
     jobs: JobManager | None = None
     bot: Bot | None = None
     bus: EventBus | None = None
+    broadcaster: Broadcaster | None = None
     try:
         await db.connect()  # migrations run here
 
@@ -75,6 +77,10 @@ async def run(config: Config) -> None:
         reporter = Reporter(bot, bus, config)
         reporter.subscribe()
 
+        broadcaster = Broadcaster(db, config, bus)
+        await broadcaster.recover(bot)
+        broadcaster.start_sweeper(bot)
+
         dispatcher = build_dispatcher(
             config=config,
             db=db,
@@ -85,6 +91,7 @@ async def run(config: Config) -> None:
             pool=pool,
             reporter=reporter,
             settings=user_settings,
+            broadcaster=broadcaster,
         )
 
         logger.info("bot polling starting")
@@ -99,6 +106,9 @@ async def run(config: Config) -> None:
             raise SystemExit(1) from exc
     finally:
         # Reverse creation order; each step tolerates the others never existing.
+        if broadcaster is not None:
+            await broadcaster.stop_sweeper()
+            await broadcaster.shutdown()
         if bot is not None:
             await bot.session.close()
         if jobs is not None:

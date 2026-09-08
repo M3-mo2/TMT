@@ -29,6 +29,7 @@ from app.bot.routers import settings as settings_router
 from app.bot.routers.admin import router as admin_router
 from app.config import Config
 from app.core.account_service import AccountService
+from app.core.broadcast import Broadcaster
 from app.core.events import EventBus
 from app.core.job_manager import JobManager
 from app.core.settings import UserSettings
@@ -50,6 +51,7 @@ def build_dispatcher(
     pool: ClientPool,
     reporter: Any | None = None,
     settings: UserSettings | None = None,
+    broadcaster: Broadcaster | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
     dp["config"] = config
@@ -60,6 +62,7 @@ def build_dispatcher(
     dp["pool"] = pool
     dp["reporter"] = reporter
     dp["settings"] = settings
+    dp["broadcaster"] = broadcaster
 
     dp.update.outer_middleware(UserGateMiddleware(db))
 
