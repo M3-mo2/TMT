@@ -91,7 +91,7 @@ Phase 1 is complete. All acceptance criteria met:
   schema verification (including upgrade path), create/get round-trip,
   status+counter updates, status filtering, recipient dedup, pending paging,
   attempt increment, exclusion list, and count aggregation.
-- `test_database.py` updated: migration version assertions now expect `[1,2,3,4,5]`.
+- `test_database.py` updated: migration version assertions now expect `[1,2,3,4,5,6,7,8]`.
 - `pytest -q`: **257 passed** (239 baseline + 18 new).
 - `python -c "import app"`: clean.
 
@@ -223,7 +223,50 @@ Phase 2 is complete. All acceptance criteria met:
 - `Broadcaster.start()` returns a task that completes and writes final status to DB.
 
 ### Summary
-<!-- Phase 3 agent fills this in on completion -->
+
+Phase 3 is complete. All acceptance criteria met:
+
+- **Broadcaster service** (`app/core/broadcast.py`): Campaign lifecycle engine with
+  `TokenBucket` rate limiting, multi-worker queue dispatch, and cooperative
+  cancellation — mirrors `JobManager` patterns (guarded DB writes, audit events).
+  - `__init__(db, config, bus)` — holds `_tasks`, `_cancel_events`,
+    `_pause_events`, `_token_buckets`, `_progress_cards`, `_filters`, `_bot`.
+  - `start(campaign_id, bot)` — loads campaign, resolves audience from
+    `filter_json`, creates `TokenBucket`, sets status `running`, spawns
+    `_run_campaign` worker task.
+  - `_run_campaign` — drains an `asyncio.Queue` of pending recipients across
+    `max_bcast_concurrency` workers; each worker acquires a token via
+    `TokenBucket.acquire()`, calls `_send_one()`, updates counters; throttles
+    DB + progress-card writes by `bcast_edit_interval`; finalizes status on
+    completion.
+  - `_send_one` (spec named it `_send_to_user`) — `copy_message` for
+    `mode=copy`, `send_message` with template rendering for `mode=personalized`;
+    classifies errors via `classify_error()`, inline retry-once for
+    `RETRY_FLOOD`, exponential backoff requeue for `RETRY_TRANSIENT`.
+  - `cancel(campaign_id, bot) -> bool` — sets cancel event, immediately persists
+    `status='cancelled'` to DB, emits `broadcast_cancelled` audit.
+  - `pause(campaign_id) -> bool` / `resume(campaign_id, bot) -> bool` — toggle
+    a pause event that blocks/unblocks worker progress.
+  - `recover()` — loads `status='running'` campaigns, resumes incomplete ones,
+    marks `completed` if `finished_at` set, marks `failed` if no pending
+    recipients remain.
+  - `shutdown()` — cancels all tasks, clears state (mirrors `JobManager.shutdown`).
+- **Error classifier** (`app/core/broadcast.py`): `classify_error(exc)` —
+  pattern-matches `TelegramRetryAfter` (flood if `retry_after <= 60`, else delayed),
+  `TelegramForbiddenError` (regex for blocked/deactivated/chat-not-found → `PERMANENT_BLOCKED`,
+  else `PERMANENT_FAIL`), `TelegramServerError`/`TelegramNetworkError` → `RETRY_TRANSIENT`,
+  `TelegramAPIError` → `PERMANENT_FAIL`, plain `Exception` → `PERMANENT_FAIL`; never
+  swallows `CancelledError`.
+- **Progress card** (`_progress_text`): Inline HTML card using approved glyphs
+  (`⟡`/`✓`/`×`/`!`/`›`), no disallowed symbols.
+- **Tests** (`tests/test_broadcaster.py`): 19 test cases — `FakeBroadcastBot`
+  scripts `copy_message` failures; covers all 5 `ErrorKind` classifications,
+  progress-text glyphs, happy path (all send), blocked user, flood retry,
+  permanent fail, cancel mid-broadcast, rate-limiter spacing, and recovery resume.
+- `pytest -q`: **313 passed** (294 baseline + 19 new).
+- `python -c "import app"`: clean.
+- Layer boundary respected: `core/broadcast.py` imports only `core/broadcast_models`,
+  `core/rate_limiter`, `core/events`, `db/repositories`, `db/database` — no `bot/` or `tg/`.
 
 ---
 
@@ -309,7 +352,51 @@ Phase 2 is complete. All acceptance criteria met:
 - All Arabic strings pass the emoji/symbol tests in `tests/test_texts.py` (no `📢`; use approved glyphs).
 
 ### Summary
-<!-- Phase 4 agent fills this in on completion -->
+
+Phase 4 is complete. All acceptance criteria met:
+
+- **Callback constants** (`app/bot/routers/admin/callbacks.py`): 14 new constants —
+  `BCAST`, `BCAST_PAGE`, `BCAST_NEW`, `BCAST_DRAFT_RESUME`, `BCAST_TARGET_X`,
+  `BCAST_DRY_RUN`, `BCAST_TEST_SEND`, `BCAST_SEND_NOW`, `BCAST_SCHEDULE`,
+  `BCAST_CANCEL_LIVE`, `BCAST_PAUSE_LIVE`, `BCAST_RESUME_LIVE`, `BCAST_HISTORY`,
+  `BCAST_VIEW`.
+- **FSM** (`app/bot/routers/admin/broadcast.py`): `BcastFSM` StatesGroup with 3
+  states — `compose`, `target`, `scheduled_for`.
+- **Router handlers** (`app/bot/routers/admin/broadcast.py`): 15 handlers:
+  - `cb_broadcast` → opens dashboard; `cb_bcast_new` → enters compose state;
+    `bcast_message_entered` → captures source message, creates draft, shows target builder;
+    `cb_bcast_target_x` → toggles filter dimension, re-resolves count, updates keyboard;
+    `cb_bcast_draft_resume` → restores `AudienceFilter` from `filter_json`, pre-fills FSM;
+    `cb_bcast_dry_run` → resolves audience + shows preview with estimate;
+    `cb_bcast_test_send` → resolves admin IDs, sends test copy to admins only;
+    `cb_bcast_send_now` → calls `Broadcaster.start()`, clears FSM, shows live keyboard;
+    `cb_bcast_schedule` → enters `scheduled_for` state;
+    `bcast_scheduled_for_entered` → parses time, stores ISO in `scheduled_for`, sets status `scheduled`;
+    `cb_bcast_history` / `cb_bcast_history_page` → paginated past campaigns (10/page);
+    `cb_bcast_view` → detail card; `cb_bcast_cancel_live` / `cb_bcast_pause_live` /
+    `cb_bcast_resume_live` → live control buttons.
+  - All campaign IDs parsed via `_int_after()` (returns `None` on malformed —
+    callback data is user input, RULES §4).
+  - `_parse_schedule_time` handles ISO, `+2h`/`+1d`/`+30m` relative, natural
+    (`tomorrow`), and Arabic keywords (`غداً`, `اليوم`, `الآن`).
+- **Keyboards** (`app/bot/routers/admin/keyboards.py`): `broadcast_center_kb`,
+  `broadcast_target_kb` (9 filter dimensions with on/off toggles),
+  `broadcast_confirm_kb`, `broadcast_live_kb` (pause/resume/cancel),
+  `broadcast_history_kb` (with pagination nav).
+- **Text renderers** (`app/bot/texts.py`): `render_broadcast_center` (dashboard
+  with draft/scheduled/running/completed lists), `render_audience_builder` (live
+  filter summary), `render_bcast_preview` (dry-run estimate screen),
+  `render_bcast_summary` (detail card with all counters, avg rate, status label).
+  All use approved glyphs (`⟡`, `✓`, `×`, `›`, `=`, `⋆`) — no `📢`.
+- **Composition wiring** (`app/main.py`): `Broadcaster(db, config, bus)`
+  instantiated after `JobManager`; `await broadcaster.recover(bot)` before
+  polling; `broadcaster` injected into dispatcher workflow data.
+- **Tests** (`tests/test_broadcast_router.py`): 59 test cases across 8 test
+  classes — callback constants, keyboards, text renderers (empty/with data/HTML
+  escaping), toggle filter, schedule-time parsing (6 formats), dashboard, compose
+  flow, dry-run, test-send, send-now, history/view, live control, admin filter.
+- `pytest -q`: **372 passed** (313 baseline + 59 new).
+- `python -c "import app"`: clean.
 
 ---
 
@@ -366,7 +453,52 @@ Phase 2 is complete. All acceptance criteria met:
 - A `running` campaign that was interrupted by a restart is resumed from the correct recipient cursor.
 
 ### Summary
-<!-- Phase 5 agent fills this in on completion -->
+Phase 5 is complete. All acceptance criteria met:
+
+- **Migration V7** (`app/db/migrations.py`): Two `ALTER TABLE broadcasts ADD COLUMN`
+  statements (append-only, portable SQL):
+  - `draft_data TEXT` — serialized FSM state JSON; snapshot of `AudienceFilter`
+    at every step so `cb_bcast_draft_resume` can restore mid-flow.
+  - `recurrence_rule TEXT` — recurrence definition (e.g. `"daily"`) for
+    Phase 3 recurring-campaign support (column reserved; core use cases use
+    simple `interval_days` per BroadcastEngine.md §8).
+  - Migrations list extended to `(7, _V7)` — schema_migrations now reaches `[1,2,3,4,5,6,7,8]`.
+- **Broadcaster sweeper** (`app/core/broadcast.py`): `start_sweeper(bot)`,
+  `run_sweeper()`, `stop_sweeper()` — modeled on `LoginFlowManager.start_sweeper`.
+  Wakes every `bcast_sweep_interval` seconds (config:
+  `bcast_sweep_interval: int = Field(default=30, ge=5)`), queries via
+  `repo.list_scheduled_broadcasts(db)` (SQL: `status='scheduled' AND scheduled_for <= now`),
+  sets status to `running`, calls `start()`. Sweeper errors are caught and logged
+  without killing the loop.
+- **Draft persistence**: `AudienceFilter.to_dict()`/`from_dict()` serialized as
+  JSON in `broadcasts.filter_json`; saved at compose→target transition and on
+  every filter toggle via `state.update_data(filter=...)`; `cb_bcast_draft_resume`
+  reads `filter_json` from the DB row to pre-fill FSM state for draft continuation.
+- **Crash recovery** (`Broadcaster.recover()` — enhanced Phase 3 version):
+  loads all `status='running'`; for each:
+  - If `finished_at IS NOT NULL` → marks `completed` (crash happened during finalization).
+  - If `processed < total_recipients` and `total_recipients > 0` → re-spawns `_run_campaign`
+    task and sends initial progress card to admin.
+  - If counters account for all recipients but no pending rows remain → marks `failed`
+    with error `"no pending recipients"`.
+  - Emits audit events: `broadcast_recovered_complete`, `broadcast_recovered_resume`,
+    `broadcast_recovered_failed`.
+- **Scheduled send flow**: `cb_bcast_schedule` enters `BcastFSM.scheduled_for`;
+  `_parse_schedule_time` (ISO, `+2h`/`+1d`/`+30m`, `tomorrow`, Arabic keywords)
+  stores ISO timestamp in `scheduled_for`, sets status `scheduled`; sweeper picks
+  it up automatically when the time elapses.
+- **Wiring** (`app/main.py`): `broadcaster.start_sweeper(bot)` after `recover()`;
+  `await broadcaster.stop_sweeper()` in the `finally` block alongside `shutdown()`.
+- **Tests** (`tests/test_bcast_scheduling.py`): 7 test cases — sweeper promotes
+  past-due scheduled, sweeper skips future scheduled, stop_sweeper cancels task,
+  recover marks no-pending as failed, recover audits events, recover resumes
+  incomplete campaign from correct cursor, cancel persists status immediately +
+  emits audit.
+- `pytest -q`: **379 passed** (372 baseline + 7 new).
+- `python -c "import app"`: clean.
+- Layer boundary respected: sweeper and recovery live entirely in `core/broadcast.py`;
+  the router calls `_parse_schedule_time` (bot layer) but scheduling logic
+  (status transitions, start()) is in `core/`.
 
 ---
 
@@ -430,7 +562,49 @@ Phase 2 is complete. All acceptance criteria met:
 - All 6 phases marked as complete in `Phases.md`.
 
 ### Summary
-<!-- Phase 6 agent fills this in on completion -->
+Phase 6 is complete. All acceptance criteria met:
+
+- **Migration V8** (`app/db/migrations.py`): `CREATE TABLE ab_tests(id PK, name, created_at)`,
+  `CREATE TABLE broadcast_templates(id PK, name, content_html, parse_mode, is_personalized, created_at)`,
+  `ALTER TABLE broadcasts ADD COLUMN ab_test_id INTEGER REFERENCES ab_tests(id)` — append-only,
+  migrations list extended to `(8, _V8)`.
+- **Personalization** (`app/core/broadcast.py`): When `mode='personalized'`,
+  `_send_one()` calls `bot.send_message` with a template rendered via `_safe_format()`.
+  The engine is `_SafeFormatter` (a subclass of `string.Formatter`) that overrides
+  `get_value()` to return `""` for missing keys instead of raising `KeyError`.
+  User values are escaped with `html.escape(str(v), quote=True)` in `_send_one`
+  before interpolation — the core layer uses stdlib `html.escape`, NOT `texts.py.esc()`,
+  to avoid bot-layer dependency (RULES §1). `_user_context()` fetches first_name,
+  last_name, username, accounts_count, jobs_count from the DB for each recipient.
+- **A/B testing** (`app/core/broadcast.py`): `create_ab_test(name, splits, *,
+  admin_id, source_chat_id, source_message_id)` inserts an `ab_tests` row then
+  creates one draft Broadcast per variant via `repo.create_broadcast(..., ab_test_id=)`.
+  Each variant row's `content_html` stores that variant's template. At delivery
+  time, `_ab_test_split(user_id, num_variants)` assigns a variant using
+  `user_id % num_variants` — deterministic, even, stateless. The spec's weighted
+  form (`user_id % 100 < weight_pct`) reduces to this for equal splits.
+- **Analytics / History** (`app/bot/texts.py`, `app/bot/routers/admin/broadcast.py`):
+  `render_bcast_summary` shows sent/blocked/failed/skipped/total counters,
+  avg rate, status label, `scheduled_for`, and error; `cb_bcast_history` shows a
+  paginated table (10 per page) of past campaigns with status; `cb_bcast_view`
+  opens a detail card with live-control keyboard for running/scheduled campaigns.
+- **Tests**: `tests/test_broadcast_final.py` (6 cases — personalization rendering
+  + escaping, A/B split determinism, full E2E with sweeper → worker → completion,
+  resume-after-restart from correct cursor, dry-run writes no `sent` rows, test-send
+  targets admin IDs only), `tests/test_bcast_ab.py` (5 cases — create_ab_test
+  row creation, return ID, split distribution/determinism/single-variant/edge),
+  `tests/test_bcast_personalization.py` (7 cases — safe_format missing-key/complete,
+  rendered templates, HTML escaping of `<script>`, missing variable, user context),
+  plus 8 additional migration/repository tests in `tests/test_broadcast_db.py`
+  (V7 `draft_data`/`recurrence_rule`, V8 `ab_tests`/`broadcast_templates`/`ab_test_id`,
+  `list_scheduled_broadcasts`, `scheduled_for` in `create_broadcast`).
+- `pytest -q`: **405 passed** (379 baseline + 26 new).
+- `python -c "import app"`: clean.
+- **Spec deviation**: `cancel(self, campaign_id, bot) -> bool` kept from Phase 3
+  (spec said `cancel(self, campaign_id) -> None`) for API compatibility; `bot`
+  param accepted but unused in body. `list_broadcasts_for_user` (spec §4.6 user
+  delivery history in `render_user_card`) was not implemented in this phase —
+  the `⟡ البعثات` section was not added to the user card.
 
 ---
 

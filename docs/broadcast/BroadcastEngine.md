@@ -315,3 +315,72 @@ All tests run **offline** against the in-memory / tmp file SQLite (via the `db` 
 
 No new third-party dependencies. `croniter` was considered for V3 recurrence but a simple
 `interval_days` integer field suffices for the core use cases; cron can be added later.
+
+---
+
+## Implementation Notes (Post-Spec)
+
+The following notes document how the spec was realized in code, including
+deviations and implementation decisions not captured in the per-phase contracts.
+
+### V7 Migration: draft_data + recurrence_rule columns
+
+V6 was already used for `filter_json` (added in Phase 3 for audience recovery).
+V7 (`app/db/migrations.py`) adds two `ALTER TABLE broadcasts ADD COLUMN`
+statements:
+- `draft_data TEXT` — serialized FSM state JSON, snapshot of the
+  `AudienceFilter` at every step so `cb_bcast_draft_resume` can restore mid-flow.
+- `recurrence_rule TEXT` — stores a recurrence definition (e.g. `"daily"`)
+  for Phase 3 recurring-campaign support.
+
+### V8 Migration: ab_test_id FK + ab_tests table + broadcast_templates table
+
+V8 (`app/db/migrations.py`) creates two new tables and adds a foreign key:
+- `ab_tests(id PK, name TEXT, created_at TEXT)` — one row per A/B test group.
+- `broadcast_templates(id PK, name TEXT, content_html TEXT, parse_mode TEXT, is_personalized INTEGER, created_at TEXT)` — reusable message templates.
+- `ALTER TABLE broadcasts ADD COLUMN ab_test_id INTEGER REFERENCES ab_tests(id)` — links each variant Broadcast to its parent test.
+
+### Broadcaster Sweeper
+
+Runs at a `bcast_sweep_interval` (config field `bcast_sweep_interval: int = Field(default=30, ge=5)`
+in `app/config.py`). The `run_sweeper()` coroutine loops: queries
+`repo.list_scheduled_broadcasts(db)` (SQL: `status='scheduled' AND scheduled_for <= now`),
+promotes each due campaign to `running` via `start()`, then sleeps for the interval.
+Controlled by `start_sweeper(bot)` / `stop_sweeper()` — mirrors `LoginFlowManager.start_sweeper`.
+
+### Personalization
+
+When `mode='personalized'`, `_send_one()` calls `bot.send_message` with a template
+rendered via `_safe_format()`. The engine is `_SafeFormatter` (a subclass of
+`string.Formatter`) that overrides `get_value()` to return `""` for missing keys
+instead of raising `KeyError`. User values are escaped with `html.escape(str(v),
+quote=True)` before interpolation — the core layer uses stdlib `html.escape`,
+NOT `texts.py.esc()`, because `app/core/` must not depend on `app/bot/` (RULES §1).
+
+### A/B Testing
+
+`create_ab_test(name, splits, *, admin_id, source_chat_id, source_message_id)`
+inserts an `ab_tests` row then creates one draft Broadcast per variant via
+`repo.create_broadcast(..., ab_test_id=)`. At delivery time,
+`_ab_test_split(user_id, num_variants)` assigns a variant using
+`user_id % num_variants` — deterministic, even, and stateless. The spec's
+weighted form (`user_id % 100 < weight_pct`) reduces to this for equal splits.
+
+### Admin Router
+
+15 handler functions in `app/bot/routers/admin/broadcast.py`, backed by `BcastFSM`
+with 3 states (`compose`, `target`, `scheduled_for`). `scheduled_for` parsing
+is handled by `_parse_schedule_time()`, which supports ISO timestamps
+(`2024-01-15T20:00:00Z`), relative offsets (`+2h`, `+1d`, `+30m`), and natural
+language / Arabic keywords (`tomorrow`, `غداً`, `اليوم`). Returns `None` for
+unparseable or past inputs. Campaign IDs from callback data are parsed via
+`_int_after()` (returns `None` on malformed input — callback data is user input,
+RULES §4).
+
+### cancel() Deviation
+
+The spec (Phase 6 §2.8) describes `cancel(self, campaign_id) -> None`, but the
+actual implementation keeps the Phase 3 signature
+`cancel(self, campaign_id, bot) -> bool`. The `bot` parameter is accepted for
+API compatibility with the Phase 4 router handler signature but is unused in the
+method body. Returns `False` if the campaign is not currently running.
