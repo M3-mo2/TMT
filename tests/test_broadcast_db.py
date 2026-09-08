@@ -52,6 +52,7 @@ async def test_migration_v5_creates_broadcast_tables(db: Database) -> None:
     assert {
         "id", "admin_id", "label", "source_chat_id", "source_message_id",
         "mode", "content_html", "status", "scheduled_for",
+        "ab_test_id", "draft_data", "recurrence_rule",
         "created_at", "started_at", "finished_at",
         "total_recipients", "sent", "blocked", "failed",
         "skipped", "cancelled", "avg_rate", "error",
@@ -111,7 +112,7 @@ async def test_migration_v5_applies_after_reconnect(tmp_path) -> None:
         versions = [r["version"] for r in await db.fetch_all(
             "SELECT version FROM schema_migrations ORDER BY version"
         )]
-        assert versions == [1, 2, 3, 4, 5]
+        assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
 
         cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(broadcasts)")}
         assert "avg_rate" in cols
@@ -406,3 +407,110 @@ async def test_count_recipients_missing_broadcast(db: Database) -> None:
         "skipped": 0,
         "delivered": 0,
     }
+
+
+# ----------------------------------------------------------------- Phase 5/6 migrations + repo
+
+
+async def test_migration_v7_adds_draft_columns(db: Database) -> None:
+    cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(broadcasts)")}
+    assert "draft_data" in cols
+    assert "recurrence_rule" in cols
+
+
+async def test_migration_v8_adds_ab_test_tables(db: Database) -> None:
+    tables = {
+        r["name"]
+        for r in await db.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    assert "ab_tests" in tables
+    assert "broadcast_templates" in tables
+
+    cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(broadcasts)")}
+    assert "ab_test_id" in cols
+
+    tmpl_cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(broadcast_templates)")}
+    assert {
+        "id", "name", "content_html", "parse_mode", "is_personalized", "created_at",
+    } <= tmpl_cols
+
+
+async def test_create_broadcast_with_scheduled_for(db: Database) -> None:
+    await add_admin(db, 1)
+    bcast_id = await repo.create_broadcast(
+        db,
+        admin_id=1,
+        label="future",
+        source_chat_id=100,
+        source_message_id=200,
+        scheduled_for="2030-01-01T00:00:00Z",
+    )
+    row = await repo.get_broadcast(db, bcast_id)
+    assert row is not None
+    assert row["scheduled_for"] == "2030-01-01T00:00:00Z"
+    assert row["status"] == "scheduled"
+
+
+async def test_create_broadcast_draft_by_default(db: Database) -> None:
+    await add_admin(db, 1)
+    bcast_id = await make_broadcast(db, label="draft")
+    row = await repo.get_broadcast(db, bcast_id)
+    assert row is not None
+    assert row["status"] == "draft"
+    assert row["scheduled_for"] is None
+
+
+async def test_list_scheduled_broadcasts_picks_due(db: Database) -> None:
+    await add_admin(db, 1)
+    past = await repo.create_broadcast(
+        db, admin_id=1, label="past", source_chat_id=1, source_message_id=1,
+        scheduled_for="2000-01-01T00:00:00Z",
+    )
+    future = await repo.create_broadcast(
+        db, admin_id=1, label="future", source_chat_id=1, source_message_id=1,
+        scheduled_for="2099-01-01T00:00:00Z",
+    )
+    _ = await repo.create_broadcast(
+        db, admin_id=1, label="draft", source_chat_id=1, source_message_id=1,
+    )
+
+    scheduled = await repo.list_scheduled_broadcasts(db)
+    assert [b["id"] for b in scheduled] == [past]
+
+
+async def test_list_scheduled_broadcasts_empty(db: Database) -> None:
+    result = await repo.list_scheduled_broadcasts(db)
+    assert result == []
+
+
+async def test_create_broadcast_with_ab_test_id(db: Database) -> None:
+    await add_admin(db, 1)
+    await repo.upsert_user(db, 1)
+    await db.execute(
+        "INSERT INTO ab_tests (name, created_at) VALUES ('test_ab', 't')"
+    )
+    row = await db.fetch_one("SELECT id FROM ab_tests WHERE name='test_ab'")
+    ab_id = row["id"]
+
+    bcast_id = await repo.create_broadcast(
+        db, admin_id=1, label="variant", source_chat_id=1,
+        source_message_id=1, mode="personalized", content_html="Hi {first_name}",
+        ab_test_id=ab_id,
+    )
+    row = await repo.get_broadcast(db, bcast_id)
+    assert row is not None
+    assert row["ab_test_id"] == ab_id
+
+
+async def test_set_broadcast_status_updates_scheduled_for(db: Database) -> None:
+    await add_admin(db, 1)
+    bcast_id = await make_broadcast(db)
+    await repo.set_broadcast_status(
+        db, bcast_id, "scheduled", scheduled_for="2030-06-01T12:00:00Z",
+    )
+    row = await repo.get_broadcast(db, bcast_id)
+    assert row is not None
+    assert row["status"] == "scheduled"
+    assert row["scheduled_for"] == "2030-06-01T12:00:00Z"

@@ -543,6 +543,7 @@ _BCAST_COUNTER_COLUMNS: frozenset[str] = frozenset(
         "skipped",
         "cancelled",
         "avg_rate",
+        "scheduled_for",
         "started_at",
         "finished_at",
         "error",
@@ -559,18 +560,30 @@ async def create_broadcast(
     source_message_id: int,
     mode: str = "copy",
     content_html: str | None = None,
+    filter_json: str | None = None,
+    scheduled_for: str | None = None,
+    ab_test_id: int | None = None,
+    draft_data: str | None = None,
+    recurrence_rule: str | None = None,
 ) -> int:
-    """Persist a new broadcast campaign in ``draft`` status.
+    """Persist a new broadcast campaign.
 
     Returns the new ``broadcasts.id`` surrogate key.  ``created_at`` is set
     in application code via ``now_iso()`` (RULES §6: no SQLite-isms in the
-    application layer).
+    application layer).  ``filter_json`` stores the serialized
+    ``AudienceFilter`` so ``Broadcaster.recover()`` can resume after a
+    restart.
+
+    If ``scheduled_for`` is provided the campaign starts in ``scheduled``
+    status; otherwise it starts in ``draft`` status.
     """
+    status = "scheduled" if scheduled_for is not None else "draft"
     return await db.execute(
         "INSERT INTO broadcasts "
         "(admin_id, label, source_chat_id, source_message_id, "
-        "mode, content_html, status, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)",
+        "mode, content_html, filter_json, status, scheduled_for, "
+        "ab_test_id, draft_data, recurrence_rule, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             admin_id,
             label,
@@ -578,6 +591,12 @@ async def create_broadcast(
             source_message_id,
             mode,
             content_html,
+            filter_json,
+            status,
+            scheduled_for,
+            ab_test_id,
+            draft_data,
+            recurrence_rule,
             now_iso(),
         ),
     )
@@ -624,6 +643,17 @@ async def list_broadcasts(
             "SELECT * FROM broadcasts WHERE status=? ORDER BY id DESC LIMIT ?",
             (status, limit),
         )
+    return [dict(row) for row in rows]
+
+
+async def list_scheduled_broadcasts(db: Database) -> list[dict[str, Any]]:
+    """Return broadcasts with status='scheduled' whose scheduled_for <= now,
+    ordered by scheduled_for ASC.  Called by the sweeper."""
+    rows = await db.fetch_all(
+        "SELECT * FROM broadcasts WHERE status='scheduled' AND scheduled_for <= ? "
+        "ORDER BY scheduled_for ASC",
+        (now_iso(),),
+    )
     return [dict(row) for row in rows]
 
 

@@ -183,12 +183,51 @@ CREATE INDEX idx_brec_status ON broadcast_recipients(broadcast_id, status);
 CREATE INDEX idx_brec_user ON broadcast_recipients(user_id);
 """
 
+# v6: persist the resolved audience filter (as JSON) on the campaign so that
+# ``Broadcaster.recover()`` can resume an interrupted campaign without the
+# caller re-supplying the audience.  Standard ALTER TABLE — portable to
+# PostgreSQL (RULES §6).
+_V6 = """
+ALTER TABLE broadcasts ADD COLUMN filter_json TEXT;
+"""
+
+# v7: Phase 5 — draft_data and recurrence_rule for scheduling/drafts.
+# draft_data stores the serialized form state (Phase 4 FSM snapshot).
+# recurrence_rule stores a recurrence definition (e.g. "daily").
+_V7 = """
+ALTER TABLE broadcasts ADD COLUMN draft_data TEXT;
+ALTER TABLE broadcasts ADD COLUMN recurrence_rule TEXT;
+"""
+
+# v8: Phase 6 — A/B testing tables and the ab_test_id FK on broadcasts.
+_V8 = """
+CREATE TABLE ab_tests (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE broadcast_templates (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    content_html TEXT NOT NULL,
+    parse_mode TEXT NOT NULL DEFAULT 'HTML',
+    is_personalized INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+ALTER TABLE broadcasts ADD COLUMN ab_test_id INTEGER REFERENCES ab_tests(id);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
     (3, _V3),
     (4, _V4),
     (5, _V5),
+    (6, _V6),
+    (7, _V7),
+    (8, _V8),
 ]
 
 

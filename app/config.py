@@ -45,7 +45,10 @@ class Config(BaseSettings):
     bcast_max_rate_per_second: int = Field(default=25, ge=1)
     bcast_flood_retry_threshold: int = Field(default=60, ge=1)
     bcast_retry_attempts: int = Field(default=3, ge=1)
-    bcast_retry_backoff_base: float = Field(default=2.0, ge=0.1)
+    bcast_retry_backoff_base: float = Field(default=2.0, ge=0.0)
+    bcast_edit_interval: float = Field(default=3.0, ge=0.1)
+    bcast_batch_size: int = Field(default=50, ge=1)
+    bcast_sweep_interval: int = Field(default=30, ge=5)
 
     @model_validator(mode="after")
     def _normalize(self) -> Config:
