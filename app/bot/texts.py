@@ -532,10 +532,10 @@ def render_audience_builder(filters: AudienceFilter, user_count: int) -> str:
     lines.append(f"{_flag(filters.with_accounts)} لديهم حسابات")
     lines.append(f"{_flag(filters.without_accounts)} بلا حسابات")
     lines.append(
-        f"› حسابات >= <code>{filters.account_count_min if filters.account_count_min is not None else '—'}</code>"
+        f"› حسابات &gt;= <code>{esc(filters.account_count_min) if filters.account_count_min is not None else '—'}</code>"
     )
     lines.append(
-        f"› حسابات <= <code>{filters.account_count_max if filters.account_count_max is not None else '—'}</code>"
+        f"› حسابات &lt;= <code>{esc(filters.account_count_max) if filters.account_count_max is not None else '—'}</code>"
     )
     lines.append(
         f"› مسجل منذ <code>{f'{filters.registered_days_ago} يوم' if filters.registered_days_ago else '—'}</code>"
