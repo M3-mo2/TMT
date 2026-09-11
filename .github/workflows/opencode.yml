@@ -1,84 +1,152 @@
-name: 🤖 Cloud OpenCode
+# ==============================================================================
+# 🤖 AUTONOMOUS MULTI-AGENT PIPELINE
+# ==============================================================================
+#
+# FLOW:
+#   workflow_dispatch (you type a feature request)
+#        │
+#        ▼
+#   [BUILD]  → creates branch + PR, implements the feature, labels PR "agent:review"
+#        │
+#        ▼
+#   [REVIEW] ⇄ [FIX]   (loops until clean, or until the safety ceiling is hit)
+#        │
+#        ▼  (once review is clean)
+#   [VERIFY]  → independently re-runs build/tests, does NOT trust Review's verdict
+#        │            ↳ if Verify finds new problems, it routes back into [FIX] too
+#        ▼  (once verify is clean)
+#   [DECISION] → posts a comment asking you: "/merge yes" or "/merge no"
+#        │
+#        ▼
+#   [MERGE GATE] → checks the commenter has write/admin access, then merges (or not)
+#
+# STATE MACHINE:
+#   All routing between stages is done via PR labels (not by scanning comment text),
+#   because label events cannot be accidentally re-triggered by an agent quoting a
+#   keyword in its own reply. Labels used: agent:review, agent:fix, agent:verify,
+#   agent:decision, agent:blocked, agent:merged, agent:closed-by-human.
+#
+#   Label swapping + cycle counting is done by plain bash/jq steps AFTER each LLM
+#   agent runs — never by the LLM itself. This keeps the loop-prevention logic
+#   100% deterministic and not dependent on the model "remembering" to behave.
+#
+# SHARED CONTEXT:
+#   Every agent run is stateless (fresh container, no memory of previous runs).
+#   Context is carried forward explicitly via a committed file on the PR branch:
+#   .github/agent-state.json — containing the original task, the cycle counter,
+#   the safety ceiling, the latest findings, and a short history log. Every agent
+#   is instructed to read this file (and `gh pr view --comments`) before acting.
+#
+# REQUIRED ONE-TIME SETUP:
+#   1. Secret PAT_TOKEN — a Personal Access Token for the bot account (repo + workflow scopes).
+#   2. Update BOT_NAME below (workflow env AND the literal string inside merge_gate's `if:`)
+#      to match the GitHub username tied to PAT_TOKEN.
+#   3. Nothing else — pipeline labels are created automatically on first run.
+#
+# SECURITY NOTE:
+#   issue_comment runs with PAT_TOKEN regardless of who commented, which is why
+#   merge_gate double-checks the commenter's actual repo permission via the API
+#   before ever calling `gh pr merge`. On a public repo, treat this as a real
+#   attack surface — don't loosen that permission check.
+# ==============================================================================
+
+name: 🤖 Multi-Agent Feature Pipeline
 
 on:
-
   workflow_dispatch:
     inputs:
       prompt:
-        description: "What should OpenCode do?"
+        description: "Describe the feature or task"
         required: true
         type: string
-      mode:
-        description: "How should OpenCode work?"
-        required: true
-        default: "build"
-        type: choice
-        options:
-          - build
-          - review
-          - doctor
-          - security
-          - explain
+      max_cycles:
+        description: "Safety ceiling for review<->fix cycles (a hard stop, not a target — big tasks may need many)"
+        required: false
+        default: "15"
+        type: string
       model:
         description: "OpenCode model"
-        required: true
+        required: false
         default: "opencode/mimo-v2.5-free"
         type: string
-
+  pull_request:
+    types: [labeled]
   issue_comment:
     types: [created]
-
-  pull_request_review_comment:
-    types: [created]
-
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
-
-  schedule:
-    - cron: "0 9 * * 1"
-
 
 permissions:
   contents: write
   pull-requests: write
   issues: write
-  id-token: write
 
+env:
+  BOT_NAME: "mohamed-AFYU" # ⚠️ غيّر ده لاسم حساب الـ PAT_TOKEN بتاعك
+  STATE_FILE: ".github/agent-state.json"
+
+concurrency:
+  group: agent-pipeline-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
-
-  # ============================================================
-  # JOB 1 — MANUAL
-  # ============================================================
-  manual:
-    name: 🧠 OpenCode Manual
+  # ============================================================================
+  # STAGE 0 — BUILD
+  # ============================================================================
+  build:
+    name: 🏗️ Build Agent
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📦 Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
           token: ${{ secrets.PAT_TOKEN }}
 
       - name: ⚙️ Configure Git
-        env:
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          git config --global user.name "mohamed-AFYU"
+          git config --global user.name "${{ env.BOT_NAME }}"
           git config --global user.email "findlapmn@gmail.com"
           git config --global init.defaultBranch main
-          git config --global advice.detachedHead false
-          git config --global credential.helper store
-          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-      - name: 🤖 Run OpenCode
+      - name: 🏷️ Ensure pipeline labels exist
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          declare -a LABELS=(
+            "agent:review|0e8a16"
+            "agent:fix|d93f0b"
+            "agent:verify|1d76db"
+            "agent:decision|5319e7"
+            "agent:blocked|b60205"
+            "agent:merged|0e8a16"
+            "agent:closed-by-human|cccccc"
+          )
+          for L in "${LABELS[@]}"; do
+            NAME="${L%%|*}"
+            COLOR="${L##*|}"
+            gh label create "$NAME" --color "$COLOR" --force
+          done
+
+      - name: 🌱 Create working branch
+        id: branch
+        run: |
+          BRANCH="agent/feature-${{ github.run_id }}"
+          git checkout -b "$BRANCH"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: 📝 Initialize pipeline state file
+        env:
+          TASK_PROMPT: ${{ inputs.prompt }}
+          MAX_CYCLES: ${{ inputs.max_cycles }}
+        run: |
+          mkdir -p "$(dirname "$STATE_FILE")"
+          jq -n --arg task "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" \
+            '{task:$task, max_cycles:$maxc, cycle:0, status:"building", findings:[], history:[]}' \
+            > "$STATE_FILE"
+          git add "$STATE_FILE"
+          git commit -m "chore(pipeline): init state"
+          git push origin "${{ steps.branch.outputs.branch }}"
+
+      - name: 🏗️ Run Build Agent
         uses: anomalyco/opencode/github@latest
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
@@ -86,187 +154,55 @@ jobs:
           model: ${{ inputs.model }}
           use_github_token: true
           prompt: |
-            You are working on this repository through GitHub Actions.
+            You are the BUILD AGENT in a multi-agent pipeline (Build → Review ⇄ Fix → Verify → Decision).
 
-            USER REQUEST:
+            TASK FROM USER:
             ${{ inputs.prompt }}
 
-            WORK MODE:
-            ${{ inputs.mode }}
+            YOU ARE ON BRANCH: ${{ steps.branch.outputs.branch }}
 
-            General rules:
-            - First inspect the repository.
-            - Understand the existing architecture before changing anything.
-            - Do not modify unrelated files.
-            - Prefer small, focused changes.
-            - Reuse existing code and conventions.
-            - Run relevant tests after changes.
-            - Run build/lint/type checks when available.
-            - Never fake successful tests.
-            - If something fails, investigate it.
-            - Explain important decisions.
-            - If code changes are appropriate, create a branch and Pull Request.
-            - Make the Pull Request description clear and useful.
+            YOUR JOB:
+            1. Inspect the repository and understand its architecture and conventions before writing any code.
+            2. Implement the requested feature/fix completely and correctly on this branch.
+            3. Run any available build/lint/test commands and fix what you can before finishing.
+            4. Commit your work with clear messages.
+            5. Push the branch and open a Pull Request against the default branch.
+               - PR title: a concise summary of the task.
+               - PR description MUST include a "## Pipeline" section explaining this PR is managed by an
+                 automated multi-agent pipeline (Build → Review → Fix → Verify → Decision), and that a human
+                 will get a final merge confirmation prompt once everything passes.
+            6. Post ONE comment on the PR starting with the header "### 🏗️ Build Agent" summarizing what you
+               built, key decisions, and anything you were unsure about.
+            7. Add the label "agent:review" to the PR to hand off to the Review Agent.
 
-            Mode instructions:
+            RULES:
+            - Do NOT add or remove any other pipeline label ("agent:fix", "agent:verify", "agent:decision",
+              "agent:blocked"). Routing beyond this first handoff is handled by the workflow itself.
+            - Do NOT merge anything.
+            - Never fake a passing test or a successful build.
 
-            BUILD:
-            Implement the requested feature or fix.
-
-            REVIEW:
-            Review the repository carefully.
-            Find bugs, bad logic, security issues, performance issues,
-            maintainability problems, and suspicious code.
-            Do not make changes unless the user explicitly requested them.
-
-            DOCTOR:
-            Act as a senior software engineer performing a complete
-            health check of the repository.
-            Find real problems rather than inventing theoretical ones.
-            Prioritize high-confidence and high-impact issues.
-            If fixes are requested, implement them and create a PR.
-
-            SECURITY:
-            Perform a security-focused audit.
-            Look for authentication problems, injection vulnerabilities,
-            unsafe input handling, secrets, insecure dependencies,
-            permission problems, and dangerous filesystem/network operations.
-
-            EXPLAIN:
-            Do not modify code unless explicitly requested.
-            Explain the relevant code, architecture, bugs, and reasoning.
-
-      - name: 🧹 Cleanup credentials
-        if: always()
-        run: |
-          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
-          rm -f ~/.git-credentials || true
-
-
-  # ============================================================
-  # JOB 2 — /oc COMMENT
-  # ============================================================
-  comment:
-    name: 💬 OpenCode Comment
-    if: |
-      github.event_name == 'issue_comment' &&
-      (
-        contains(github.event.comment.body, '/oc') ||
-        contains(github.event.comment.body, '/opencode')
-      )
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: 📦 Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: true
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: ⚙️ Configure Git
-        env:
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          git config --global user.name "YOUR_GITHUB_USERNAME"
-          git config --global user.email "YOUR_EMAIL"
-          git config --global init.defaultBranch main
-          git config --global advice.detachedHead false
-          git config --global credential.helper store
-          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-
-      - name: 🤖 Run OpenCode
-        uses: anomalyco/opencode/github@latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-        with:
-          model: opencode/mimo-v2.5-free
-          use_github_token: true
-
-      - name: 🧹 Cleanup credentials
-        if: always()
-        run: |
-          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
-          rm -f ~/.git-credentials || true
-
-
-  # ============================================================
-  # JOB 3 — LINE REVIEW
-  # ============================================================
-  review_comment:
-    name: 🎯 OpenCode Line Review
-    if: |
-      github.event_name == 'pull_request_review_comment' &&
-      (
-        contains(github.event.comment.body, '/oc') ||
-        contains(github.event.comment.body, '/opencode')
-      )
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: 📦 Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: true
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: ⚙️ Configure Git
-        env:
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          git config --global user.name "YOUR_GITHUB_USERNAME"
-          git config --global user.email "YOUR_EMAIL"
-          git config --global init.defaultBranch main
-          git config --global advice.detachedHead false
-          git config --global credential.helper store
-          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-
-      - name: 🤖 Run OpenCode
-        uses: anomalyco/opencode/github@latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-        with:
-          model: opencode/mimo-v2.5-free
-          use_github_token: true
-
-      - name: 🧹 Cleanup credentials
-        if: always()
-        run: |
-          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
-          rm -f ~/.git-credentials || true
-
-
-  # ============================================================
-  # JOB 4 — AUTO PR REVIEW
-  # ============================================================
-  pull_request_review:
-    name: 🔍 Automatic PR Review
+  # ============================================================================
+  # STAGE 1 — REVIEW
+  # ============================================================================
+  review:
+    name: 🔍 Review Agent
     if: |
       github.event_name == 'pull_request' &&
-      github.event.pull_request.draft == false
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'agent:review'
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📦 Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
           token: ${{ secrets.PAT_TOKEN }}
 
-      - name: ⚙️ Configure Git
+      - name: 🔀 Checkout PR branch
         env:
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          git config --global user.name "YOUR_GITHUB_USERNAME"
-          git config --global user.email "YOUR_EMAIL"
-          git config --global init.defaultBranch main
-          git config --global advice.detachedHead false
-          git config --global credential.helper store
-          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: gh pr checkout ${{ github.event.pull_request.number }}
 
-      - name: 🤖 Review Pull Request
+      - name: 🔍 Run Review Agent
         uses: anomalyco/opencode/github@latest
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
@@ -274,67 +210,96 @@ jobs:
           model: opencode/mimo-v2.5-free
           use_github_token: true
           prompt: |
-            Review this Pull Request as a senior software engineer.
+            You are the REVIEW AGENT in a multi-agent pipeline.
 
-            Carefully inspect:
-            - The complete diff
-            - Surrounding code
-            - Existing architecture
-            - Tests
-            - Error handling
-            - Security
-            - Performance
-            - Potential regressions
+            Before anything else, read the full context:
+            - `gh pr view ${{ github.event.pull_request.number }} --comments`
+            - the file at $STATE_FILE on this branch (path: .github/agent-state.json), especially the
+              "task" and "history" fields, so you know what was actually asked for.
 
-            Do NOT make changes.
+            YOUR JOB:
+            Review the complete diff of this PR as a senior engineer. Look for bugs, logic errors, security
+            issues, performance problems, missing error handling, missing tests for important behavior, and
+            any deviation from the task described in the state file.
 
-            Only report issues that are meaningful and reasonably
-            supported by the code.
+            Do NOT modify code. Do NOT push any commits except updating the state file as instructed below.
 
-            For every important problem explain:
+            OUTPUT (do both):
+            1. Post ONE PR comment starting with header "### 🔍 Review Agent — Cycle <current cycle from state
+               file>" listing every issue found (Title / Severity / File / Why it matters / Suggested fix), or
+               clearly stating "No issues found." if the PR is clean. Only report issues you can support with
+               evidence from the code — never invent problems just to produce a report.
+            2. Update .github/agent-state.json on this branch:
+               - set "status" to exactly "issues_found" or "clean"
+               - if issues_found: replace "findings" with a JSON array of
+                 {"title","severity","file","detail"} objects for THIS cycle only (overwrite, don't append)
+               - if clean: set "findings" to an empty array
+               - append one object to "history": {"agent":"review","cycle":<current cycle>,"result":"<status>"}
+               - commit and push ONLY this file, message: "chore(pipeline): review cycle result"
 
-            1. What is wrong
-            2. Why it is a problem
-            3. Where it occurs
-            4. How it could be fixed
+            RULES:
+            - Do NOT add or remove any "agent:*" label yourself — the workflow does this automatically based
+              on the state file you just wrote.
 
-            If the PR looks good, say so clearly.
-
-      - name: 🧹 Cleanup credentials
-        if: always()
+      - name: 🧭 Route based on review result
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
-          rm -f ~/.git-credentials || true
+          git pull origin "${{ github.event.pull_request.head.ref }}"
+          STATUS=$(jq -r '.status' "$STATE_FILE")
+          CYCLE=$(jq -r '.cycle' "$STATE_FILE")
+          MAXC=$(jq -r '.max_cycles' "$STATE_FILE")
+          PR=${{ github.event.pull_request.number }}
 
+          gh pr edit "$PR" --remove-label "agent:review"
 
-  # ============================================================
-  # JOB 5 — CODE DOCTOR
-  # ============================================================
-  doctor:
-    name: 🩺 Code Doctor
-    if: github.event_name == 'schedule'
+          if [ "$STATUS" = "clean" ]; then
+            gh pr edit "$PR" --add-label "agent:verify"
+            exit 0
+          fi
+
+          if [ "$CYCLE" -ge "$MAXC" ]; then
+            gh pr edit "$PR" --add-label "agent:blocked"
+            gh pr comment "$PR" --body "### 🛑 Safety ceiling reached
+          The pipeline hit its safety limit of **$MAXC** review↔fix cycles without converging.
+
+          Please check the findings above and either:
+          - fix things manually and re-add the \`agent:review\` label to resume, or
+          - comment with further instructions.
+
+          @${{ github.repository_owner }}"
+            exit 0
+          fi
+
+          NEWCYCLE=$((CYCLE + 1))
+          jq --argjson c "$NEWCYCLE" '.cycle = $c' "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
+          git add "$STATE_FILE"
+          git commit -m "chore(pipeline): advance to cycle $NEWCYCLE"
+          git push origin "${{ github.event.pull_request.head.ref }}"
+          gh pr edit "$PR" --add-label "agent:fix"
+
+  # ============================================================================
+  # STAGE 2 — FIX
+  # ============================================================================
+  fix:
+    name: 🛠️ Fix Agent
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'agent:fix'
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📦 Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
           token: ${{ secrets.PAT_TOKEN }}
 
-      - name: ⚙️ Configure Git
+      - name: 🔀 Checkout PR branch
         env:
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          git config --global user.name "YOUR_GITHUB_USERNAME"
-          git config --global user.email "YOUR_EMAIL"
-          git config --global init.defaultBranch main
-          git config --global advice.detachedHead false
-          git config --global credential.helper store
-          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: gh pr checkout ${{ github.event.pull_request.number }}
 
-      - name: 🩺 Run Code Doctor
+      - name: 🛠️ Run Fix Agent
         uses: anomalyco/opencode/github@latest
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
@@ -342,91 +307,51 @@ jobs:
           model: opencode/mimo-v2.5-free
           use_github_token: true
           prompt: |
-            You are the Code Doctor for this repository.
+            You are the FIX AGENT in a multi-agent pipeline.
 
-            Perform a deep health check of the entire codebase.
+            Read .github/agent-state.json on this branch — it contains "findings" from the last Review or
+            Verify Agent pass (current cycle) and the original "task".
 
-            Investigate:
+            YOUR JOB:
+            Fix EVERY finding listed. Do not introduce unrelated changes. Run relevant tests/build/lint after
+            fixing and confirm they actually pass. Never fake a passing test.
 
-            1. Real bugs
-            2. Broken logic
-            3. Crash risks
-            4. Security vulnerabilities
-            5. Bad error handling
-            6. Performance problems
-            7. Race conditions
-            8. Incorrect assumptions
-            9. Dead or unreachable code
-            10. Suspicious TODO/FIXME items
-            11. Dependency problems
-            12. Poor architecture that can cause real problems
-            13. Missing tests for important behavior
+            OUTPUT:
+            1. Commit and push your fixes to this branch.
+            2. Post ONE PR comment starting with header "### 🛠️ Fix Agent — Cycle <current cycle>" explaining
+               what you changed for each finding.
+            3. Do NOT edit .github/agent-state.json and do NOT touch any "agent:*" label — the workflow hands
+               this back to the Review Agent automatically.
 
-            IMPORTANT:
-
-            Do not invent problems just to produce a report.
-
-            Only report issues that you can support with evidence
-            from the repository.
-
-            Prioritize findings:
-
-            CRITICAL
-            HIGH
-            MEDIUM
-            LOW
-
-            For each important finding provide:
-
-            - Title
-            - Severity
-            - File
-            - Relevant code/area
-            - Why it is a problem
-            - How to reproduce it if possible
-            - Recommended fix
-
-            Do not modify the repository during this audit.
-
-            If you find an issue that is worth fixing,
-            create a clear GitHub issue or report it through
-            the available GitHub context.
-
-      - name: 🧹 Cleanup credentials
-        if: always()
+      - name: 🔁 Hand back to Review Agent
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
-          rm -f ~/.git-credentials || true
+          PR=${{ github.event.pull_request.number }}
+          gh pr edit "$PR" --remove-label "agent:fix" --add-label "agent:review"
 
-
-  # ============================================================
-  # JOB 6 — SECURITY AUDIT
-  # ============================================================
-  security:
-    name: 🔐 Security Audit
-    if: github.event_name == 'schedule'
+  # ============================================================================
+  # STAGE 3 — VERIFY (independent double-check, doesn't trust Review's verdict)
+  # ============================================================================
+  verify:
+    name: ✅ Verify Agent
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'agent:verify'
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📦 Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
           token: ${{ secrets.PAT_TOKEN }}
 
-      - name: ⚙️ Configure Git
+      - name: 🔀 Checkout PR branch
         env:
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          git config --global user.name "YOUR_GITHUB_USERNAME"
-          git config --global user.email "YOUR_EMAIL"
-          git config --global init.defaultBranch main
-          git config --global advice.detachedHead false
-          git config --global credential.helper store
-          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: gh pr checkout ${{ github.event.pull_request.number }}
 
-      - name: 🔐 Run Security Audit
+      - name: ✅ Run Verify Agent
         uses: anomalyco/opencode/github@latest
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
@@ -434,41 +359,112 @@ jobs:
           model: opencode/mimo-v2.5-free
           use_github_token: true
           prompt: |
-            Perform a security audit of this repository.
+            You are the VERIFY AGENT — the independent quality gate. Do NOT trust the Review Agent's earlier
+            "clean" verdict blindly; re-check everything for yourself.
 
-            Look for:
+            YOUR JOB:
+            1. Actually run the project's build, lint, and test commands (detect them from the repo — e.g.
+               package.json scripts, Makefile, etc.). Report REAL command output, never fabricate results.
+            2. Confirm the implementation genuinely satisfies the original task described in
+               .github/agent-state.json ("task" field) — not just "no errors", but "does what was asked".
+            3. Do NOT modify code.
 
-            - Hardcoded secrets
-            - API keys
-            - Authentication vulnerabilities
-            - Authorization problems
-            - Injection vulnerabilities
-            - XSS
-            - Command injection
-            - Path traversal
-            - Unsafe file operations
-            - SSRF
-            - Unsafe deserialization
-            - Insecure randomness
-            - Dangerous dependency usage
-            - Missing input validation
-            - Privilege escalation
-            - Sensitive data exposure
-            - Insecure configuration
+            OUTPUT (do both):
+            1. Post ONE PR comment starting with header "### ✅ Verify Agent" with a summary of the real
+               command output and your verdict.
+            2. Update .github/agent-state.json:
+               - set "status" to "clean" (ready to ask the human) or "issues_found"
+               - if issues_found: replace "findings" with the new problems (same schema as Review Agent uses)
+               - append to "history": {"agent":"verify","cycle":<current cycle>,"result":"<status>"}
+               - commit and push ONLY this file.
 
-            Inspect both the source code and dependency configuration.
-
-            Do not invent vulnerabilities.
-
-            Only report findings supported by evidence.
-
-            Do not modify code.
-
-            If serious vulnerabilities are found,
-            create clear GitHub issues describing them.
-
-      - name: 🧹 Cleanup credentials
-        if: always()
+      - name: 🧭 Route based on verify result
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
-          rm -f ~/.git-credentials || true
+          git pull origin "${{ github.event.pull_request.head.ref }}"
+          STATUS=$(jq -r '.status' "$STATE_FILE")
+          CYCLE=$(jq -r '.cycle' "$STATE_FILE")
+          MAXC=$(jq -r '.max_cycles' "$STATE_FILE")
+          PR=${{ github.event.pull_request.number }}
+
+          gh pr edit "$PR" --remove-label "agent:verify"
+
+          if [ "$STATUS" = "clean" ]; then
+            gh pr edit "$PR" --add-label "agent:decision"
+            exit 0
+          fi
+
+          if [ "$CYCLE" -ge "$MAXC" ]; then
+            gh pr edit "$PR" --add-label "agent:blocked"
+            gh pr comment "$PR" --body "### 🛑 Safety ceiling reached during verification
+          @${{ github.repository_owner }} — please take a look at the findings above."
+            exit 0
+          fi
+
+          NEWCYCLE=$((CYCLE + 1))
+          jq --argjson c "$NEWCYCLE" '.cycle = $c' "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
+          git add "$STATE_FILE"
+          git commit -m "chore(pipeline): verify found issues, advance to cycle $NEWCYCLE"
+          git push origin "${{ github.event.pull_request.head.ref }}"
+          gh pr edit "$PR" --add-label "agent:fix"
+
+  # ============================================================================
+  # STAGE 4 — DECISION (asks the human, does nothing else)
+  # ============================================================================
+  decision:
+    name: 🏁 Decision Gate
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'agent:decision'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🏁 Ask for merge confirmation
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          gh pr comment "$PR" --body "### 🏁 Pipeline complete — awaiting your decision
+          The feature has been built, reviewed, fixed as needed, and independently verified. No open issues.
+
+          Reply on this PR with:
+          - \`/merge yes\` to squash-merge this PR
+          - \`/merge no\` to stop here (PR stays open, nothing happens automatically)
+
+          @${{ github.repository_owner }}"
+
+  # ============================================================================
+  # STAGE 5 — MERGE GATE (only reacts to explicit human confirmation)
+  # ============================================================================
+  merge_gate:
+    name: 🔀 Merge Gate
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login != 'mohamed-AFYU' &&
+      contains(github.event.issue.labels.*.name, 'agent:decision') &&
+      (startsWith(github.event.comment.body, '/merge yes') || startsWith(github.event.comment.body, '/merge no'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔀 Verify permission and act on decision
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+        run: |
+          PR=${{ github.event.issue.number }}
+
+          PERM=$(gh api "repos/${{ github.repository }}/collaborators/${COMMENT_AUTHOR}/permission" --jq .permission)
+          if [ "$PERM" != "admin" ] && [ "$PERM" != "write" ]; then
+            gh pr comment "$PR" --body "⚠️ @${COMMENT_AUTHOR} doesn't have permission to confirm a merge on this repo."
+            exit 0
+          fi
+
+          if [[ "$COMMENT_BODY" == "/merge yes"* ]]; then
+            gh pr merge "$PR" --squash --delete-branch
+            gh pr edit "$PR" --remove-label "agent:decision" --add-label "agent:merged"
+          else
+            gh pr comment "$PR" --body "👍 Got it — leaving this PR open without merging."
+            gh pr edit "$PR" --remove-label "agent:decision" --add-label "agent:closed-by-human"
+          fi
