@@ -1,8 +1,0 @@
-{
-  "task": "I want a report (the folder must be written in the appropriate path/location) about additional features I am thinking of adding, such as a notification to the owner when someone joins the bot and a better notification system. Write a detailed report with a very deep discussion of the idea and a proposed architecture design ready for implementation.",
-  "max_cycles": 30,
-  "cycle": 0,
-  "status": "building",
-  "findings": [],
-  "history": []
-}
