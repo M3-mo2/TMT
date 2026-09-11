@@ -67,7 +67,7 @@ on:
       model:
         description: "OpenCode model"
         required: false
-        default: "kc/poolside/laguna-s-2.1:free"
+        default: "ninerouter/kc/poolside/laguna-s-2.1:free"
         type: string
   pull_request:
     types: [labeled]
@@ -207,7 +207,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         with:
-          model: kc/poolside/laguna-s-2.1:free
+          model: ninerouter/kc/poolside/laguna-s-2.1:free
           use_github_token: true
           prompt: |
             You are the REVIEW AGENT in a multi-agent pipeline.
@@ -304,7 +304,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         with:
-          model: kc/poolside/laguna-s-2.1:free
+          model: ninerouter/kc/poolside/laguna-s-2.1:free
           use_github_token: true
           prompt: |
             You are the FIX AGENT in a multi-agent pipeline.
@@ -356,7 +356,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         with:
-          model: kc/poolside/laguna-s-2.1:free
+          model: ninerouter/kc/poolside/laguna-s-2.1:free
           use_github_token: true
           prompt: |
             You are the VERIFY AGENT — the independent quality gate. Do NOT trust the Review Agent's earlier
