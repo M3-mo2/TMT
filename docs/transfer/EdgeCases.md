@@ -55,7 +55,7 @@ Source: `app/tg/preflight.py`
 | P-02 | Both IDs are 0 (invite previews) | Both source and dest are invite previews not yet joined | `source.id == dest.id == 0` → `dest_diff = PASS` (false positive: 0==0 should fail) | **Bug**: two invite previews with id=0 would pass the same-group check; however, they can never be used as source because membership check requires `is_member=True` for invite-only groups |
 | P-03 | Dest is invite preview with `is_member=False` | User enters a `t.me/+hash` link they haven't joined | `dest_member = FAIL` — explicit check on `via_invite_link and is_member is False` | User must join the dest group first |
 | P-04 | Source is invite preview with `is_member=False` | User enters an invite link for a group they haven't joined | `source_member = FAIL` (same logic as P-03) | User must join the source group first |
-| P-05 | Invite preview with `id=0` and `is_member=True` | `ChatInviteAlready` returned — account is already a member | `dest_diff = PASS` (0 is used for comparison), `source_member = PASS` via `get_permissions` | **Edge**: `id=0` means `_peer_of()` returns `None`, so membership/invite-rights checks degrade to `UNKNOWN` |
+| P-05 | Invite preview where `_peer_of` returns `None` | `_peer_of()` returns `None` due to unsupported kind or zero id | Membership and invite-rights checks degrade to `UNKNOWN` | Transfer proceeds with degraded confidence; runtime invite may fail |
 | P-06 | Source participants hidden | `iter_participants` returns 0 users, but `members_count > 0` or is `None` | `source_participants = UNKNOWN` — "قائمة الأعضاء غير متاحة قد تكون مخفية" | User is warned; transfer may still proceed with unknown participant list |
 | P-07 | Source participants list empty with count=0 | `iter_participants` returns 0, `members_count=0` | `source_participants = PASS` — empty source, nothing to transfer | Silently succeeds; transfer engine will produce 0 invites |
 | P-08 | Source member count exceeds `max_members` | `members_count > max_members` | `source_participants = WARN` — user warned only N will be processed | Transfer proceeds but caps at `max_members`; extra members silently skipped |
@@ -80,7 +80,7 @@ Source: `app/core/job_manager.py`
 | J-02 | Account unauthorized (session revoked) | `record.status == UNAUTHORIZED` | Raises `ServiceError("جلسة الحساب غير صالحة")` | User must re-login the account |
 | J-03 | Account limited (cooldown active) | `record.status == LIMITED` with future `limited_until` | Raises `ServiceError` with remaining time (e.g., "1 ساعة و 29 دقيقة") | User must wait for cooldown to expire |
 | J-04 | Account limited with expired cooldown | `record.status == LIMITED` but `limited_until` is in the past | Job creation proceeds normally | Account effectively treated as active |
-| J-05 | Account limited with unparseable `limited_until` | Corrupt or missing timestamp string | `_parse_limited_until` returns `None`; treated as active | **Potential bug**: an account with `status=limited` but no parseable timestamp would be allowed to create a job |
+| J-05 | Account limited with unparseable `limited_until` | Corrupt or missing timestamp string | `_parse_limited_until` returns `None`; raises `ServiceError(MSG_ACCOUNT_LIMITED)` — account rejected | **Safe**: account is rejected; no bypass. Severity: Low |
 | J-06 | Account busy (another job running) | `account_id in self._active_accounts` or DB count > 0 | Raises `ServiceError("الحساب مشغول الآن")` | User must wait or cancel the running job |
 | J-07 | User at capacity | Active job count >= `max_running_jobs_per_user` | Raises `ServiceError("وصلت إلى الحد الأقصى")` | User must wait for existing jobs to finish |
 | J-08 | Non-groupish entities | `source.is_groupish or dest.is_groupish` is `False` | Raises `ServiceError("المصدر والهدف يجب أن يكونا مجموعتين مدعومة")` | Prevented at creation; double-checked in preflight |
@@ -113,7 +113,7 @@ Source: `app/tg/transfer.py`
 | T-06 | Cancel during FloodWait sleep | `cancel_event.set()` while sleeping in `state.sleep()` | Sleep is sliced (0.2s); cancel detected on next slice | Job cancelled promptly; no further invites |
 | T-07 | Network error during dest fetch | `ConnectionError`, `TimeoutError`, `OSError` | Classified as `TRANSIENT`; if `attempt < 2`, retries once | If retry also fails, job aborted |
 | T-08 | Network error during source fetch | Same as T-07 | Same retry logic | Same outcome |
-| T-09 | FloodWait error during dest iteration | `FloodWaitError` while fetching dest members | Classified as FLOOD_WAIT; if `attempt < 2`, retries after sleep | If wait exceeds `flood_wait_max`, job aborted |
+| T-09 | FloodWait error during dest iteration | `FloodWaitError` while fetching dest members | Classified as `FLOOD_WAIT`; `retryable=False` — aborts immediately without retry | Job aborted; no member iteration occurs |
 | T-10 | FloodWait error during invite | `FloodWaitError` while inviting a user | Sleeps for `wait_seconds` (if <= `flood_wait_max`); retries invite once | If second attempt also gets FloodWait, counts as `failed` |
 | T-11 | FloodWait exceeding cap | `wait_seconds > flood_wait_max` | Job aborted with Arabic message mentioning the wait duration | Account NOT marked fatal; user can retry later |
 | T-12 | PeerFlood on invite | `PeerFloodError` | Job aborted; account marked `LIMITED` with cooldown | **Critical**: prevents hammering the account |
@@ -139,6 +139,8 @@ Source: `app/tg/transfer.py`
 | T-032 | Iterator close failure | `aclose()` raises network error | Caught by `_EXPECTED_ERRORS`; logged at debug level | Non-critical; cleanup best-effort |
 | T-033 | `get_input_entity` failure for user | User entity not cached in the session | Raises `ValueError` or `RPCError`; classified by `_handle_invite_error` | Counts as skip or abort depending on kind |
 | T-034 | `get_input_entity` failure for dest | Dest entity not in session | Same as T-033 but for the dest peer | Could abort the job |
+| T-035 | `UserIsBlockedError` on invite | Account is blocked by the dest group or vice versa | Classified as `ACCOUNT_RESTRICTED`; job aborted | Account NOT marked fatal; user sees blocked error |
+| T-036 | Invalid peer/hash errors on invite | `PeerIdInvalidError`, `UserIdInvalidError`, `ChatIdInvalidError`, `InviteHashExpiredError`, `InviteHashInvalidError` | Classified as `INPUT_INVALID`; job aborted | Account NOT marked fatal; user sees input error |
 
 ---
 
@@ -182,7 +184,7 @@ Source: `app/db/repositories.py`, `app/core/job_manager.py`
 | DB-01 | Double finalization (cancel races completion) | Cancel flag set while engine is completing | Guarded CAS: `transition_job` from `RUNNING` only succeeds once | **Exactly-once**: whichever call wins the CAS sets the final status |
 | DB-02 | Counter write failure in `_finalize` | DB error during `update_job_progress` after CAS | Caught and logged; status already set | Counters may be stale; status is correct |
 | DB-03 | Event publish failure in `_finalize` | Bus subscriber raises | Caught and logged; status is correct in DB | Telegram final summary not sent |
-| DB-04 | Audit log failure | `repo.audit` raises | Not caught (would propagate) | **Potential issue**: could crash the finalization path |
+| DB-04 | Audit log failure | `repo.audit` raises | Not caught (would propagate) | **Medium severity**: unhandled exception could prevent account slot cleanup in the `_finalize` finally block |
 | DB-05 | Account deleted during job | `ON DELETE SET NULL` FK constraint | Job's `account_id` becomes `None`; `render_job_card` shows "محذوف" | Job history preserved; account reference lost |
 | DB-06 | Job state corrupted by manual DB edit | Manual SQL or bug | CAS transition may fail; `_finalize` returns `False` | Job stuck in non-final state; recovery on next boot marks it INTERRUPTED |
 | DB-07 | Concurrent `transition_job` calls | Shutdown cancels while engine completes | CAS ensures exactly one wins; other returns `False` | Safe by design |
@@ -206,7 +208,7 @@ Source: `app/config.py`, `app/core/settings.py`
 | CFG-07 | `invite_delay_jitter_seconds` negative | Config validation | `pydantic` rejects with `ge=0` | Config load fails at startup |
 | CFG-08 | `peer_flood_cooldown_seconds` set to 0 | Config | PeerFlood marks account as limited with `until=now` | Account immediately usable again; defeats the cooldown purpose |
 | CFG-09 | User setting override not validated | User enters non-numeric text | `int(raw)` raises `ValueError`; user sees `M_SETTING_INVALID` | Safe rejection |
-| CFG-10 | User setting override allows zero/negative | User enters `0` for `invite_delay_seconds` | Accepted (config allows `ge=0`) | See CFG-02 |
+| CFG-10 | User setting override allows zero/negative | User enters `0` for `invite_delay_seconds` | Accepted — `UserSettings.set()` stores raw ints with no bounds checking; pydantic `ge` constraints are bypassed | Negative or zero values accepted at settings layer; see CFG-01–CFG-04 for impacts |
 
 ---
 
@@ -250,8 +252,8 @@ Source: `app/bot/routers/transfers.py`
 The following edge cases have the highest severity or are most likely to affect
 production usage:
 
-1. **J-05**: Account with `status=limited` but unparseable `limited_until` — may
-   bypass cooldown. (Severity: Medium)
+1. **J-05**: Account with `status=limited` but unparseable `limited_until` —
+   rejected with `MSG_ACCOUNT_LIMITED`. Safe behavior; no bypass. (Severity: Low)
 
 2. **P-02**: Two invite previews with `id=0` bypassing the same-group check —
    mitigated because invite-preview sources always fail the membership check.
@@ -264,7 +266,10 @@ production usage:
    preventing finalization — account state may be inconsistent with the job
    outcome. (Severity: Medium)
 
-5. **SEC-01**: Master key change invalidating all sessions — requires all users
+5. **DB-04**: Audit log failure in `_finalize` — unhandled exception could
+   prevent account slot cleanup in the finally block. (Severity: Medium)
+
+6. **SEC-01**: Master key change invalidating all sessions — requires all users
    to re-login. (Severity: High if key rotation is performed)
 
 6. **T-11**: FloodWait exceeding cap aborts the job but does NOT mark the
