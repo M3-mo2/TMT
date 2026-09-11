@@ -1,4 +1,19 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "permission": "allow"
+  "permission": "allow",
+  "provider": {
+    "ninerouter": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "9Router",
+      "options": {
+        "baseURL": "https://9router-production-71a5.up.railway.app/v1",
+        "apiKey": "sk-084c27a5187832e3-viako1-cbf6542d"
+      },
+      "models": {
+        "kc/poolside/laguna-s-2.1:free": {
+          "name": "kc/poolside/laguna-s-2.1:free"
+        }
+      }
+    }
+  }
 }
