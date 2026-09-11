@@ -465,6 +465,14 @@ The FSM handlers (`phone_entered`, `code_entered`, `source_entered`, etc.) only 
 
 **Impact:** Confusing UX — user sends non-text content and gets no response.
 
+### U13. Gate screen text and keyboard use different icon sets
+
+**File:** `app/bot/texts.py:235` vs `app/bot/keyboards.py:180`
+
+The gate screen text (`render_gate_screen`) uses 👤 (channel) / 🔰 (group) icons, while the gate keyboard buttons (`gate_kb`) use 📢 (channel) / 👥 (group). Users see mismatched icons on the same screen, creating a visual inconsistency.
+
+**Impact:** Cosmetic inconsistency — same channel/group shown with different icons on the same screen.
+
 ---
 
 ## 7. Gate-Specific Edge Cases
@@ -549,14 +557,6 @@ The query filters `is_active=1`, so inactive channels are excluded. This is corr
 
 **Impact:** None — correct behavior.
 
-### E6. Gate: duplicate channel IDs possible
-
-**File:** `app/db/repositories.py` (add_channel)
-
-If an admin adds the same channel twice, there is no UNIQUE constraint on `channel_id` in the `channels` table. This could lead to duplicate entries, and users would see the same channel listed twice in the gate screen.
-
-**Impact:** Duplicate gate entries.
-
 ---
 
 ## 8. Summary and Recommendations
@@ -579,7 +579,6 @@ If an admin adds the same channel twice, there is no UNIQUE constraint on `chann
 | L3 | Phone number not deleted from chat | PII exposure |
 | L6 | No loading indicator during login | Confusing UX |
 | T1 | Resolution error clears wizard context | User must restart |
-| E6 | Duplicate channel entries possible | Gate duplication |
 
 ### Medium-Priority Issues (fix when convenient)
 
@@ -613,6 +612,7 @@ If an admin adds the same channel twice, there is no UNIQUE constraint on `chann
 | L7 | 2FA retry not communicated | Minor UX |
 | L8 | Phone normalization edge case | Minor validation |
 | L9 | Concurrent login cancel | Minor UX |
+| U13 | Gate text/keyboard icon mismatch | Minor inconsistency |
 
 ### Files That Need Changes
 
@@ -624,5 +624,5 @@ If an admin adds the same channel twice, there is no UNIQUE constraint on `chann
 6. **`app/bot/routers/transfers.py`** — Add context to error messages (T2), add loading indicators (T5), add confirmation step (T7)
 7. **`app/bot/routers/settings.py`** — Show global defaults (S1), add range validation (S2), persist to DB (S3)
 8. **`app/bot/routers/common.py`** — Add feedback on fallback (U9), warn before FSM clear (U11)
-9. **`app/db/repositories.py`** — Add UNIQUE constraint on channel_id (E6), add settings table (S3)
+9. **`app/db/repositories.py`** — Add settings table (S3)
 10. **`app/db/migrations.py`** — Add settings migration (S3)
