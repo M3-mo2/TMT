@@ -140,6 +140,10 @@ async def test_gate_blocks_unsubscribed_user(db: Database) -> None:
 
 
 async def test_gate_allows_verified_callback(db: Database) -> None:
+    """The gate:verify callback must bypass the gate check and reach the handler
+    even when the user is not yet a member (so they can prove membership)."""
+    from aiogram.types import CallbackQuery
+
     from app.db import repositories as repo
     from app.bot.middlewares import UserGateMiddleware
 
@@ -147,17 +151,15 @@ async def test_gate_allows_verified_callback(db: Database) -> None:
         db, channel_id=-1001, title="Test Ch", invite_link="https://t.me/test", entry_type="channel",
     )
     mw = UserGateMiddleware(db)
-    bot = _FakeBot()
+    bot = _FakeBot()  # bot cannot verify membership — would block without the bypass
 
-    cb = SimpleNamespace(
+    # Use a real CallbackQuery so isinstance(inner, CallbackQuery) is True.
+    cb = CallbackQuery.model_construct(
+        id=1,
         from_user=_FakeUser(42),
         data="gate:verify",
         message=SimpleNamespace(chat=_FakeChat()),
     )
-
-    async def _cb_answer(*a: Any, **kw: Any) -> Any:
-        return None
-    cb.answer = _cb_answer
 
     event = _FakeUpdate(cb, event_type="callback_query")
     data: dict[str, Any] = {"bot": bot}
@@ -173,6 +175,44 @@ async def test_gate_allows_verified_callback(db: Database) -> None:
     assert len(called) == 1
     assert data["db"] is db
     assert result == "ok"
+
+
+async def test_gate_blocks_when_bot_cannot_verify_membership(db: Database) -> None:
+    """When the bot cannot verify membership (get_chat_member raises — e.g. the
+    bot is not admin of the mandatory channel), the gate must FAIL CLOSED:
+    the user is blocked, not let through.  Previously the honesty-policy
+    ``continue`` let non-subscribed users slip through when every check raised.
+    """
+    from app.db import repositories as repo
+    from app.bot.middlewares import UserGateMiddleware
+
+    await repo.add_channel(
+        db, channel_id=-1001, title="Test Ch", invite_link="https://t.me/test", entry_type="channel",
+    )
+    mw = UserGateMiddleware(db)
+    # Bot raises for every channel → cannot verify membership
+    bot = _FakeBot(statuses={})
+
+    msg = SimpleNamespace(
+        from_user=_FakeUser(42),
+        chat=_FakeChat(),
+        text="/start",
+    )
+    async def _answer(*a: Any, **kw: Any) -> Any:
+        return None
+    msg.answer = _answer
+
+    event = _FakeUpdate(msg)
+    data: dict[str, Any] = {"bot": bot}
+    called = []
+
+    async def handler(ev: Any, d: dict[str, Any]) -> str:
+        called.append((ev, d))
+        return "ok"
+
+    await mw(handler, event, data)
+    assert called == []  # handler blocked — not reached
+    assert not await repo.is_gate_cleared(db, 42)  # gate NOT cleared
 
 
 async def test_gate_clears_when_user_already_member(db: Database) -> None:

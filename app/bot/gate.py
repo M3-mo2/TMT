@@ -18,10 +18,12 @@ async def check_membership(bot: Any, user_id: int, mandatory: list[dict[str, Any
     """Return ``True`` when *user_id* is a member of every entry in *mandatory*.
 
     A member check that cannot be performed (e.g. the bot was removed as admin
-    from a channel) is **skipped** — logged as a warning — rather than blocking
-    the user outright.  This "honesty" policy means a misconfigured mandatory
-    set degrades to open-access instead of locking everyone out (RULES §3:
-    never lose data silently — the warning is logged for the operator).
+    from a channel, the channel was deleted, or a transient API error occurs)
+    causes the check to **fail** — the user is treated as *not* verified and the
+    gate stays closed.  This fail-closed behaviour is required for a *mandatory*
+    subscription gate: if membership cannot be confirmed for any required entry,
+    the user must not be let through.  The failure is still logged as a warning
+    for the operator (RULES §3: never lose data silently).
     """
     for entry in mandatory:
         try:
@@ -30,10 +32,11 @@ async def check_membership(bot: Any, user_id: int, mandatory: list[dict[str, Any
             )
         except Exception:
             logger.warning(
-                "Cannot verify membership for channel_id=%s user_id=%d — skipping",
+                "Cannot verify membership for channel_id=%s user_id=%d — "
+                "failing closed (gate stays active)",
                 entry["channel_id"], user_id, exc_info=True,
             )
-            continue
+            return False
         if member.status not in ("creator", "administrator", "member", "restricted"):
             return False
     return True
