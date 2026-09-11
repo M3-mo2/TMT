@@ -1,8 +1,62 @@
 {
   "task": "I want a report (the folder must be written in the appropriate path/location) about all the possible edge cases that can happen during the member transfer process.",
   "max_cycles": 30,
-  "cycle": 0,
-  "status": "building",
-  "findings": [],
-  "history": []
+  "cycle": 1,
+  "status": "issues_found",
+  "findings": [
+    {
+      "title": "P-05 describes an impossible scenario",
+      "severity": "low",
+      "file": "docs/transfer/EdgeCases.md",
+      "detail": "The report claims id=0 and is_member=True can coexist, causing _peer_of() to return None and degrade checks to UNKNOWN. This is impossible: ChatInviteAlready (which sets is_member=True) returns the actual chat entity with a real ID via _entity_to_resolved(). The id=0 + is_member=True state never exists. The edge case entry should be corrected or removed."
+    },
+    {
+      "title": "J-05 describes wrong behavior for unparseable limited_until",
+      "severity": "medium",
+      "file": "docs/transfer/EdgeCases.md",
+      "detail": "The report says an account with status=limited but unparseable limited_until is 'treated as active.' The actual code (job_manager.py:143-144) rejects job creation with MSG_ACCOUNT_LIMITED when _parse_limited_until returns None. The account is safely rejected, not treated as active. The severity rating of 'Potential bug' should be downgraded since the behavior is safe."
+    },
+    {
+      "title": "T-09 incorrectly claims FloodWait retries during dest fetch",
+      "severity": "medium",
+      "file": "docs/transfer/EdgeCases.md",
+      "detail": "The report states FloodWait during dest member iteration 'retries after sleep' if attempt < 2. In reality, _handle_fetch_error classifies FloodWaitError as FLOOD_WAIT with retryable=False (errors.py:118), so it immediately aborts without retry. Only TRANSIENT errors are retryable in the fetch path. The trigger-and-behavior description is factually wrong."
+    },
+    {
+      "title": "Missing edge case: ACCOUNT_RESTRICTED during invite",
+      "severity": "low",
+      "file": "docs/transfer/EdgeCases.md",
+      "detail": "UserIsBlockedError maps to ErrorKind.ACCOUNT_RESTRICTED (errors.py:190-194) and aborts the job without per-member handling. This is not documented in T-01 through T-04."
+    },
+    {
+      "title": "Missing edge case: INPUT_INVALID during invite",
+      "severity": "low",
+      "file": "docs/transfer/EdgeCases.md",
+      "detail": "PeerIdInvalidError, UserIdInvalidError, ChatIdInvalidError, InviteHashExpiredError, and InviteHashInvalidError all map to ErrorKind.INPUT_INVALID (errors.py:196-206) and abort the job. These are not documented in the transfer engine section."
+    },
+    {
+      "title": "Missing edge case: user settings bypass config validation",
+      "severity": "low",
+      "file": "docs/transfer/EdgeCases.md",
+      "detail": "UserSettings.set() (settings.py:41-43) stores raw ints with no bounds checking. A user can set invite_delay_seconds=-5 or flood_wait_max_seconds=0 at the settings layer, bypassing the config-level ge=0 constraints. CFG-10 partially addresses this but understates the scope."
+    },
+    {
+      "title": "Severity ratings need adjustment",
+      "severity": "low",
+      "file": "docs/transfer/EdgeCases.md",
+      "detail": "J-05 should be downgraded from Medium to Low (safe rejection, not a bypass). DB-04 (audit log failure propagation) should be upgraded from a note to Medium severity since an unhandled exception in _finalize could prevent account slot cleanup."
+    }
+  ],
+  "history": [
+    {
+      "agent": "build",
+      "cycle": 0,
+      "result": "completed"
+    },
+    {
+      "agent": "review",
+      "cycle": 0,
+      "result": "issues_found"
+    }
+  ]
 }
