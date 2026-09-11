@@ -32,7 +32,7 @@ from app.core.broadcast_models import (
     ErrorKind,
     RecipientStatus,
 )
-from app.core.events import EventBus
+from app.core.events import EventBus, SystemEvent
 from app.core.rate_limiter import TokenBucket
 from app.db import repositories as repo
 from app.db.database import Database
@@ -278,6 +278,16 @@ class Broadcaster:
         )
         self._tasks[campaign_id] = task
         logger.info("start: campaign %d worker spawned", campaign_id)
+        await self._publish_system_event(
+            SystemEvent(
+                event_type="broadcast_started",
+                severity="info",
+                title="📢|بدأ البث",
+                body=f"⟡|الحملة <code>#{campaign_id}</code> بدأت الإرسال.",
+                data={"campaign_id": campaign_id,
+                      "admin_id": campaign["admin_id"]},
+            )
+        )
 
     async def cancel(self, campaign_id: int, bot: Any) -> bool:
         """Signal the running worker to stop cooperatively and persist status.
@@ -302,7 +312,26 @@ class Broadcaster:
                 owner_id=campaign["admin_id"],
                 detail={"campaign_id": campaign_id},
             )
+            await self._publish_system_event(
+                SystemEvent(
+                    event_type="broadcast_failed",
+                    severity="info",
+                    title="↺|ألغي بث",
+                    body=f"⟡|الحملة <code>#{campaign_id}</code> ألغيت بواسطة المشرف.",
+                    data={"campaign_id": campaign_id, "admin_id": campaign["admin_id"]},
+                )
+            )
         return True
+
+    async def _publish_system_event(self, event: SystemEvent) -> None:
+        """Best-effort publish to the bus; logged only."""
+        try:
+            await self._bus.publish(event)
+        except Exception:  # pragma: no cover - publish never raises
+            logger.warning(
+                "broadcast: system event publish failed (%s)",
+                event.event_type, exc_info=True,
+            )
 
     async def pause(self, campaign_id: int) -> bool:
         """Pause a running campaign. Returns False if not running."""
@@ -644,6 +673,27 @@ class Broadcaster:
             bot, cid, campaign["admin_id"],
             counters["sent"], counters["blocked"],
             counters["failed"], counters["skipped"], total, finished=True,
+        )
+        await self._publish_system_event(
+            SystemEvent(
+                event_type="broadcast_completed",
+                severity="error" if final_status == "failed" else "info",
+                title="✅|اكمل البث" if final_status == BroadcastStatus.COMPLETED.value
+                else "×|فشل البث",
+                body=(
+                    f"⟡|الحملة <code>#{cid}</code>: "
+                    f"{counters['sent']} أرسلت، "
+                    f"{counters['blocked']} ممنوع، "
+                    f"{counters['failed']} فشل، "
+                    f"{counters['skipped']} تم تخطيها."
+                ),
+                data={
+                    "campaign_id": cid, "admin_id": campaign["admin_id"],
+                    "sent": counters["sent"], "blocked": counters["blocked"],
+                    "failed": counters["failed"], "skipped": counters["skipped"],
+                    "cancelled": cancel_evt.is_set(),
+                },
+            )
         )
         self._progress_cards.pop(cid, None)
         self._tasks.pop(cid, None)

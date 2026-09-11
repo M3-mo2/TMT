@@ -57,6 +57,14 @@ SET_LANG = f"{PREFIX}:set:lang"
 SET_LANG_AR = f"{PREFIX}:set:lang:ar"
 SET_LANG_EN = f"{PREFIX}:set:lang:en"
 
+# notifications
+NOTIFY = f"{PREFIX}:notify"
+NOTIFY_PAGE = f"{PREFIX}:notify:p:"
+NOTIFY_READ = f"{PREFIX}:notify:read:"
+NOTIFY_DISMISS = f"{PREFIX}:notify:dismiss:"
+NOTIFY_MARK_ALL = f"{PREFIX}:notify:markall"
+NOTIFY_TOGGLE = f"{PREFIX}:notify:toggle:"
+
 # backups
 BAK = f"{PREFIX}:bak"
 BAK_NEW = f"{PREFIX}:bak:new"

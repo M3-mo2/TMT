@@ -32,6 +32,7 @@ from app.core.account_service import AccountService
 from app.core.broadcast import Broadcaster
 from app.core.events import EventBus
 from app.core.job_manager import JobManager
+from app.core.notifications import NotificationService
 from app.core.settings import UserSettings
 from app.db.database import Database
 from app.tg.client_pool import ClientPool
@@ -52,6 +53,7 @@ def build_dispatcher(
     reporter: Any | None = None,
     settings: UserSettings | None = None,
     broadcaster: Broadcaster | None = None,
+    notifications: NotificationService | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
     dp["config"] = config
@@ -63,8 +65,9 @@ def build_dispatcher(
     dp["reporter"] = reporter
     dp["settings"] = settings
     dp["broadcaster"] = broadcaster
+    dp["notifications"] = notifications if notifications is not None else None
 
-    dp.update.outer_middleware(UserGateMiddleware(db))
+    dp.update.outer_middleware(UserGateMiddleware(db, bus=bus))
 
     # FSM-filtered routers first; the catch-all common router must be last.
     dp.include_router(accounts_router.router)

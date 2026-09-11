@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from app.core.events import EventBus, JobFinishedEvent, JobProgressEvent
+from app.core.events import EventBus, JobFinishedEvent, JobProgressEvent, SystemEvent, SYSTEM_EVENTS
 from app.core.models import JobStatus
 
 
@@ -91,3 +91,48 @@ async def test_unsubscribing_inside_publish_does_not_confuse_iteration() -> None
     assert seen == ["first", "second"]
     await bus.publish(event)  # first is gone
     assert seen == ["first", "second", "second"]
+
+
+# ---------------------------------------------------------------- SystemEvent
+
+
+async def test_system_event_is_frozen_and_has_defaults() -> None:
+    ev = SystemEvent(event_type="user_joined")
+    assert ev.event_type == "user_joined"
+    assert ev.severity == "info"
+    assert ev.title == ""
+    assert ev.body == ""
+    assert ev.data == {}
+
+
+def test_system_event_is_frozen() -> None:
+    ev = SystemEvent(event_type="user_joined", severity="info", title="t", body="b",
+                     data={"x": 1})
+    with pytest.raises(AttributeError):
+        ev.event_type = "other"
+
+
+def test_system_events_contains_core_types() -> None:
+    assert "user_joined" in SYSTEM_EVENTS
+    assert "job_started" in SYSTEM_EVENTS
+    assert "job_completed" in SYSTEM_EVENTS
+    assert "job_failed" in SYSTEM_EVENTS
+    assert "broadcast_started" in SYSTEM_EVENTS
+    assert "broadcast_completed" in SYSTEM_EVENTS
+    assert "flood_wait" in SYSTEM_EVENTS
+    assert "peer_flood" in SYSTEM_EVENTS
+    assert isinstance(SYSTEM_EVENTS, frozenset)
+
+
+async def test_system_event_is_delivered_to_subscribers() -> None:
+    bus = EventBus()
+    seen: list[Any] = []
+
+    async def handler(event: Any) -> None:
+        seen.append(event)
+
+    bus.subscribe(handler)
+    ev = SystemEvent(event_type="user_joined", title="t", body="b",
+                     data={"user_id": 42})
+    await bus.publish(ev)
+    assert seen == [ev]

@@ -21,6 +21,7 @@ from app.core.account_service import AccountService
 from app.core.broadcast import Broadcaster
 from app.core.events import EventBus
 from app.core.job_manager import JobManager
+from app.core.notifications import NotificationService
 from app.core.settings import UserSettings
 from app.db.database import Database
 from app.logging_setup import setup_logging
@@ -49,6 +50,7 @@ async def run(config: Config) -> None:
     bot: Bot | None = None
     bus: EventBus | None = None
     broadcaster: Broadcaster | None = None
+    notifier: NotificationService | None = None
     try:
         await db.connect()  # migrations run here
 
@@ -65,7 +67,7 @@ async def run(config: Config) -> None:
         )
         logins.start_sweeper()
 
-        accounts = AccountService(db, crypto, pool)
+        accounts = AccountService(db, crypto, pool, bus=bus)
         engine = TransferEngine()
         user_settings = UserSettings(config)
         jobs = JobManager(db, pool, crypto, bus, config, engine, settings=user_settings)
@@ -81,6 +83,10 @@ async def run(config: Config) -> None:
         await broadcaster.recover(bot)
         broadcaster.start_sweeper(bot)
 
+        notifier = NotificationService(db, config, bus)
+        notifier.set_bot(bot)
+        notifier.subscribe()
+
         dispatcher = build_dispatcher(
             config=config,
             db=db,
@@ -92,6 +98,7 @@ async def run(config: Config) -> None:
             reporter=reporter,
             settings=user_settings,
             broadcaster=broadcaster,
+            notifications=notifier,
         )
 
         logger.info("bot polling starting")
@@ -109,6 +116,8 @@ async def run(config: Config) -> None:
         if broadcaster is not None:
             await broadcaster.stop_sweeper()
             await broadcaster.shutdown()
+        if notifier is not None:
+            notifier.unsubscribe()
         if bot is not None:
             await bot.session.close()
         if jobs is not None:

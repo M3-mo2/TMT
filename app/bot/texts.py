@@ -48,6 +48,11 @@ __all__ = [
     "skip_reason_label", "phase_label",
     "render_broadcast_center", "render_audience_builder",
     "render_bcast_preview", "render_bcast_progress", "render_bcast_summary",
+    "BUT_NOTIFICATIONS", "M_NOTIFY_TITLE", "M_NOTIFY_EMPTY",
+    "M_NOTIFY_UNREAD_BADGE", "M_NOTIFY_SETTINGS_TITLE",
+    "render_notification_card", "render_notifications_list",
+    "notification_event_label", "notification_severity_label",
+    "render_notify_settings",
 ]
 
 # ---------------------------------------------------------------- decorations
@@ -68,13 +73,14 @@ BUT_HELP = "› المساعدة"
 BUT_MAIN = "› القائمة الرئيسية"
 BUT_ADD_ACCOUNT = "› إضافة حساب"
 BUT_BACK = "› رجوع"
-BUT_CANCEL = "× إلغاء"
+BUT_CANCEL = "× إلغاف"
 BUT_DELETE = "× حذف"
 BUT_CONFIRM_DELETE = "× تأكيد الحذف"
 BUT_REFRESH = "› تحديث"
 BUT_START_TRANSFER = "› بدء النقل"
 BUT_SETTINGS = "› الإعدادات"
 BUT_RESET = "↺ إعادة تعيين"
+BUT_NOTIFICATIONS = "› الإشعارات"
 
 # ---------------------------------------------------------------- generic
 
@@ -679,6 +685,129 @@ def render_bcast_summary(campaign: dict[str, Any]) -> str:
         lines.append(f"› مواعيد ↼ <code>{esc(campaign['scheduled_for'])}</code>")
     if campaign.get("error"):
         lines.append(f"› السبب ↼ {esc(campaign['error'])}")
+    lines.append("")
+    lines.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- notifications
+
+
+M_NOTIFY_TITLE = "⟡ مركز الإشعارات"
+M_NOTIFY_EMPTY = "⟡ لا توجد إشعارات غير مقروءة حالياً."
+M_NOTIFY_UNREAD_BADGE = "⟡|لديك <code>{n}</code> إشعار غير مقروء."
+
+M_NOTIFY_SETTINGS_TITLE = "⟡ إعدادات الإشعارات"
+
+
+#: Arabic labels for system event types shown in the admin panel.
+_NOTIFY_EVENT_LABELS: dict[str, str] = {
+    "user_joined": "مستخدم جديد",
+    "account_added": "تم إضافة حساب",
+    "account_removed": "تم حذف حساب",
+    "account_unauthorized": "جلسة غير صالحة",
+    "job_started": "بدأت عملية نقل",
+    "job_completed": "اكتملت عملية نقل",
+    "job_failed": "فشلت عملية نقل",
+    "job_cancelled": "ألغيت عملية نقل",
+    "job_interrupted": "وقفت عملية نقل",
+    "broadcast_started": "بدأ البث",
+    "broadcast_completed": "اكتمل البث",
+    "broadcast_failed": "فشل أو ألغي البث",
+    "flood_wait": "FloodWait",
+    "peer_flood": "PeerFlood",
+}
+
+
+def notification_event_label(event_type: str) -> str:
+    """Arabic label for a system event type (used in the admin panel)."""
+    return _NOTIFY_EVENT_LABELS.get(event_type, event_type)
+
+
+def notification_severity_label(severity: str) -> str:
+    """Arabic label for a notification severity."""
+    if severity == "info":
+        return "معلومات"
+    if severity == "warning":
+        return "تحذير"
+    if severity == "error":
+        return "خطأ"
+    return severity
+
+
+def render_notification_card(notif: dict[str, Any]) -> str:
+    """Render a single notification for the admin panel card view."""
+    from datetime import datetime
+
+    try:
+        dt = datetime.strptime(notif.get("created_at", ""), "%Y-%m-%dT%H:%M:%SZ")
+        ts = dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        ts = esc(notif.get("created_at") or "—")
+    glyph = {"info": "›", "warning": "!", "error": "×"}.get(
+        notif.get("severity", "info"), "›"
+    )
+    read_mark = "✓" if notif.get("read_at") else " "
+    return "\n".join([
+        f"{glyph} <b>{esc(notif.get('title', ''))}</b>",
+        f"›|النوع ↼ <code>{notification_event_label(notif.get('event_type', ''))}</code>",
+        f"›|الوقت ↼ <code>{ts}</code>",
+        read_mark,
+        esc(notif.get("body", "")),
+    ])
+
+
+def render_notifications_list(
+    notifications: list[dict[str, Any]], unread_count: int
+) -> str:
+    """Render the notifications inbox list with an unread badge."""
+    lines: list[str] = [M_NOTIFY_TITLE]
+    if unread_count:
+        lines.append("")
+        lines.append(f"⟡|غير مقروء ↼ <code>{unread_count}</code>")
+    lines.append("")
+    lines.append("ـــــــــــــــــــــــــ")
+    if not notifications:
+        lines.append("")
+        lines.append(M_NOTIFY_EMPTY)
+        return "\n".join(lines)
+    for n in notifications:
+        glyph = {"info": "›", "warning": "!", "error": "×"}.get(
+            n.get("severity", "info"), "›"
+        )
+        unread_dot = "•" if not n.get("read_at") else " "
+        lines.append(
+            f"{unread_dot} {glyph} {esc(n.get('title', ''))}  "
+            f"<code>{notification_event_label(n.get('event_type', ''))}</code>"
+        )
+    lines.append("")
+    lines.append("――――――――――――――――――――――")
+    lines.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(lines)
+
+
+def render_notify_settings(
+    admin_ids: list[int],
+    enabled_types: list[str],
+) -> str:
+    """Render the notification settings screen showing per-event toggles.
+
+    ``enabled_types`` is the list of event types that are currently enabled
+    (missing entries default to enabled).  The full set of event types comes
+    from :data:`~app.core.events.SYSTEM_EVENTS`."""
+    from app.core.events import SYSTEM_EVENTS
+
+    lines: list[str] = [M_NOTIFY_SETTINGS_TITLE, "", "――――――――――――――――――――――"]
+    for et in sorted(SYSTEM_EVENTS):
+        label = notification_event_label(et)
+        on = "✓" if et in enabled_types else "×"
+        lines.append(f"{on} {et}  {esc(label)}")
+    lines.append("")
+    lines.append(f"⟡|المشرفون المشتركون بهم ↼ <code>{len(admin_ids)}</code>")
+    if admin_ids:
+        lines.append("")
+        for aid in admin_ids:
+            lines.append(f"›|<code>{aid}</code>")
     lines.append("")
     lines.append("استخدم الأزرار للتنقل ↓")
     return "\n".join(lines)
