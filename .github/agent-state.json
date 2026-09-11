@@ -1,0 +1,8 @@
+{
+  "task": "I want a report (the folder must be written in the appropriate path/location) about the problems that can occur in the UI/UX or in the mandatory subscription process itself. Examine the flow itself carefully, discover potential problems, and write a report.",
+  "max_cycles": 15,
+  "cycle": 0,
+  "status": "building",
+  "findings": [],
+  "history": []
+}
