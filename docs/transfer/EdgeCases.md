@@ -139,7 +139,7 @@ Source: `app/tg/transfer.py`
 | T-032 | Iterator close failure | `aclose()` raises network error | Caught by `_EXPECTED_ERRORS`; logged at debug level | Non-critical; cleanup best-effort |
 | T-033 | `get_input_entity` failure for user | User entity not cached in the session | Raises `ValueError` or `RPCError`; classified by `_handle_invite_error` | Counts as skip or abort depending on kind |
 | T-034 | `get_input_entity` failure for dest | Dest entity not in session | Same as T-033 but for the dest peer | Could abort the job |
-| T-035 | `UserIsBlockedError` on invite | Account is blocked by the dest group or vice versa | Classified as `ACCOUNT_RESTRICTED`; job aborted | Account NOT marked fatal; user sees blocked error |
+| T-035 | `UserIsBlockedError` on invite | Target user has blocked the account (bot) that is attempting the invite | Classified as `ACCOUNT_RESTRICTED`; job aborted | Account NOT marked fatal; user sees blocked error |
 | T-036 | Invalid peer/hash errors on invite | `PeerIdInvalidError`, `UserIdInvalidError`, `ChatIdInvalidError`, `InviteHashExpiredError`, `InviteHashInvalidError` | Classified as `INPUT_INVALID`; job aborted | Account NOT marked fatal; user sees input error |
 
 ---
@@ -184,7 +184,7 @@ Source: `app/db/repositories.py`, `app/core/job_manager.py`
 | DB-01 | Double finalization (cancel races completion) | Cancel flag set while engine is completing | Guarded CAS: `transition_job` from `RUNNING` only succeeds once | **Exactly-once**: whichever call wins the CAS sets the final status |
 | DB-02 | Counter write failure in `_finalize` | DB error during `update_job_progress` after CAS | Caught and logged; status already set | Counters may be stale; status is correct |
 | DB-03 | Event publish failure in `_finalize` | Bus subscriber raises | Caught and logged; status is correct in DB | Telegram final summary not sent |
-| DB-04 | Audit log failure | `repo.audit` raises | Not caught (would propagate) | **Medium severity**: unhandled exception could prevent account slot cleanup in the `_finalize` finally block |
+| DB-04 | Audit log failure | `repo.audit` raises | Not caught (would propagate) | **Medium severity**: audit trail gap; the job is finalized and account slot is cleaned up, but the finished event is not audited |
 | DB-05 | Account deleted during job | `ON DELETE SET NULL` FK constraint | Job's `account_id` becomes `None`; `render_job_card` shows "محذوف" | Job history preserved; account reference lost |
 | DB-06 | Job state corrupted by manual DB edit | Manual SQL or bug | CAS transition may fail; `_finalize` returns `False` | Job stuck in non-final state; recovery on next boot marks it INTERRUPTED |
 | DB-07 | Concurrent `transition_job` calls | Shutdown cancels while engine completes | CAS ensures exactly one wins; other returns `False` | Safe by design |
@@ -266,17 +266,18 @@ production usage:
    preventing finalization — account state may be inconsistent with the job
    outcome. (Severity: Medium)
 
-5. **DB-04**: Audit log failure in `_finalize` — unhandled exception could
-   prevent account slot cleanup in the finally block. (Severity: Medium)
+5. **DB-04**: Audit log failure in `_finalize` — unhandled exception causes
+   audit trail gap; the job is finalized and account slot is cleaned up, but
+   the finished event is not audited. (Severity: Medium)
 
 6. **SEC-01**: Master key change invalidating all sessions — requires all users
    to re-login. (Severity: High if key rotation is performed)
 
-6. **T-11**: FloodWait exceeding cap aborts the job but does NOT mark the
+7. **T-11**: FloodWait exceeding cap aborts the job but does NOT mark the
    account as limited — user can immediately retry, potentially hitting the
    same wall. (Severity: Low-Medium)
 
-7. **CFG-08**: `peer_flood_cooldown_seconds=0` defeats the cooldown purpose.
+8. **CFG-08**: `peer_flood_cooldown_seconds=0` defeats the cooldown purpose.
    (Severity: Low — config-level)
 
 ---
