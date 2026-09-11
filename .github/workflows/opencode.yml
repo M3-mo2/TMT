@@ -1,0 +1,474 @@
+name: 🤖 Cloud OpenCode
+
+on:
+
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "What should OpenCode do?"
+        required: true
+        type: string
+      mode:
+        description: "How should OpenCode work?"
+        required: true
+        default: "build"
+        type: choice
+        options:
+          - build
+          - review
+          - doctor
+          - security
+          - explain
+      model:
+        description: "OpenCode model"
+        required: true
+        default: "opencode/mimo-v2.5-free"
+        type: string
+
+  issue_comment:
+    types: [created]
+
+  pull_request_review_comment:
+    types: [created]
+
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+  schedule:
+    - cron: "0 9 * * 1"
+
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+
+jobs:
+
+  # ============================================================
+  # JOB 1 — MANUAL
+  # ============================================================
+  manual:
+    name: 🧠 OpenCode Manual
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: ⚙️ Configure Git
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          git config --global user.name "mohamed-AFYU"
+          git config --global user.email "findlapmn@gmail.com"
+          git config --global init.defaultBranch main
+          git config --global advice.detachedHead false
+          git config --global credential.helper store
+          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: 🤖 Run OpenCode
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        with:
+          model: ${{ inputs.model }}
+          use_github_token: true
+          prompt: |
+            You are working on this repository through GitHub Actions.
+
+            USER REQUEST:
+            ${{ inputs.prompt }}
+
+            WORK MODE:
+            ${{ inputs.mode }}
+
+            General rules:
+            - First inspect the repository.
+            - Understand the existing architecture before changing anything.
+            - Do not modify unrelated files.
+            - Prefer small, focused changes.
+            - Reuse existing code and conventions.
+            - Run relevant tests after changes.
+            - Run build/lint/type checks when available.
+            - Never fake successful tests.
+            - If something fails, investigate it.
+            - Explain important decisions.
+            - If code changes are appropriate, create a branch and Pull Request.
+            - Make the Pull Request description clear and useful.
+
+            Mode instructions:
+
+            BUILD:
+            Implement the requested feature or fix.
+
+            REVIEW:
+            Review the repository carefully.
+            Find bugs, bad logic, security issues, performance issues,
+            maintainability problems, and suspicious code.
+            Do not make changes unless the user explicitly requested them.
+
+            DOCTOR:
+            Act as a senior software engineer performing a complete
+            health check of the repository.
+            Find real problems rather than inventing theoretical ones.
+            Prioritize high-confidence and high-impact issues.
+            If fixes are requested, implement them and create a PR.
+
+            SECURITY:
+            Perform a security-focused audit.
+            Look for authentication problems, injection vulnerabilities,
+            unsafe input handling, secrets, insecure dependencies,
+            permission problems, and dangerous filesystem/network operations.
+
+            EXPLAIN:
+            Do not modify code unless explicitly requested.
+            Explain the relevant code, architecture, bugs, and reasoning.
+
+      - name: 🧹 Cleanup credentials
+        if: always()
+        run: |
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
+          rm -f ~/.git-credentials || true
+
+
+  # ============================================================
+  # JOB 2 — /oc COMMENT
+  # ============================================================
+  comment:
+    name: 💬 OpenCode Comment
+    if: |
+      github.event_name == 'issue_comment' &&
+      (
+        contains(github.event.comment.body, '/oc') ||
+        contains(github.event.comment.body, '/opencode')
+      )
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: ⚙️ Configure Git
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          git config --global user.name "YOUR_GITHUB_USERNAME"
+          git config --global user.email "YOUR_EMAIL"
+          git config --global init.defaultBranch main
+          git config --global advice.detachedHead false
+          git config --global credential.helper store
+          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: 🤖 Run OpenCode
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        with:
+          model: opencode/mimo-v2.5-free
+          use_github_token: true
+
+      - name: 🧹 Cleanup credentials
+        if: always()
+        run: |
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
+          rm -f ~/.git-credentials || true
+
+
+  # ============================================================
+  # JOB 3 — LINE REVIEW
+  # ============================================================
+  review_comment:
+    name: 🎯 OpenCode Line Review
+    if: |
+      github.event_name == 'pull_request_review_comment' &&
+      (
+        contains(github.event.comment.body, '/oc') ||
+        contains(github.event.comment.body, '/opencode')
+      )
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: ⚙️ Configure Git
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          git config --global user.name "YOUR_GITHUB_USERNAME"
+          git config --global user.email "YOUR_EMAIL"
+          git config --global init.defaultBranch main
+          git config --global advice.detachedHead false
+          git config --global credential.helper store
+          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: 🤖 Run OpenCode
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        with:
+          model: opencode/mimo-v2.5-free
+          use_github_token: true
+
+      - name: 🧹 Cleanup credentials
+        if: always()
+        run: |
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
+          rm -f ~/.git-credentials || true
+
+
+  # ============================================================
+  # JOB 4 — AUTO PR REVIEW
+  # ============================================================
+  pull_request_review:
+    name: 🔍 Automatic PR Review
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: ⚙️ Configure Git
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          git config --global user.name "YOUR_GITHUB_USERNAME"
+          git config --global user.email "YOUR_EMAIL"
+          git config --global init.defaultBranch main
+          git config --global advice.detachedHead false
+          git config --global credential.helper store
+          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: 🤖 Review Pull Request
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        with:
+          model: opencode/mimo-v2.5-free
+          use_github_token: true
+          prompt: |
+            Review this Pull Request as a senior software engineer.
+
+            Carefully inspect:
+            - The complete diff
+            - Surrounding code
+            - Existing architecture
+            - Tests
+            - Error handling
+            - Security
+            - Performance
+            - Potential regressions
+
+            Do NOT make changes.
+
+            Only report issues that are meaningful and reasonably
+            supported by the code.
+
+            For every important problem explain:
+
+            1. What is wrong
+            2. Why it is a problem
+            3. Where it occurs
+            4. How it could be fixed
+
+            If the PR looks good, say so clearly.
+
+      - name: 🧹 Cleanup credentials
+        if: always()
+        run: |
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
+          rm -f ~/.git-credentials || true
+
+
+  # ============================================================
+  # JOB 5 — CODE DOCTOR
+  # ============================================================
+  doctor:
+    name: 🩺 Code Doctor
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: ⚙️ Configure Git
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          git config --global user.name "YOUR_GITHUB_USERNAME"
+          git config --global user.email "YOUR_EMAIL"
+          git config --global init.defaultBranch main
+          git config --global advice.detachedHead false
+          git config --global credential.helper store
+          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: 🩺 Run Code Doctor
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        with:
+          model: opencode/mimo-v2.5-free
+          use_github_token: true
+          prompt: |
+            You are the Code Doctor for this repository.
+
+            Perform a deep health check of the entire codebase.
+
+            Investigate:
+
+            1. Real bugs
+            2. Broken logic
+            3. Crash risks
+            4. Security vulnerabilities
+            5. Bad error handling
+            6. Performance problems
+            7. Race conditions
+            8. Incorrect assumptions
+            9. Dead or unreachable code
+            10. Suspicious TODO/FIXME items
+            11. Dependency problems
+            12. Poor architecture that can cause real problems
+            13. Missing tests for important behavior
+
+            IMPORTANT:
+
+            Do not invent problems just to produce a report.
+
+            Only report issues that you can support with evidence
+            from the repository.
+
+            Prioritize findings:
+
+            CRITICAL
+            HIGH
+            MEDIUM
+            LOW
+
+            For each important finding provide:
+
+            - Title
+            - Severity
+            - File
+            - Relevant code/area
+            - Why it is a problem
+            - How to reproduce it if possible
+            - Recommended fix
+
+            Do not modify the repository during this audit.
+
+            If you find an issue that is worth fixing,
+            create a clear GitHub issue or report it through
+            the available GitHub context.
+
+      - name: 🧹 Cleanup credentials
+        if: always()
+        run: |
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
+          rm -f ~/.git-credentials || true
+
+
+  # ============================================================
+  # JOB 6 — SECURITY AUDIT
+  # ============================================================
+  security:
+    name: 🔐 Security Audit
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: ⚙️ Configure Git
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          git config --global user.name "YOUR_GITHUB_USERNAME"
+          git config --global user.email "YOUR_EMAIL"
+          git config --global init.defaultBranch main
+          git config --global advice.detachedHead false
+          git config --global credential.helper store
+          git remote set-url origin "https://x-access-token:${PAT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: 🔐 Run Security Audit
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        with:
+          model: opencode/mimo-v2.5-free
+          use_github_token: true
+          prompt: |
+            Perform a security audit of this repository.
+
+            Look for:
+
+            - Hardcoded secrets
+            - API keys
+            - Authentication vulnerabilities
+            - Authorization problems
+            - Injection vulnerabilities
+            - XSS
+            - Command injection
+            - Path traversal
+            - Unsafe file operations
+            - SSRF
+            - Unsafe deserialization
+            - Insecure randomness
+            - Dangerous dependency usage
+            - Missing input validation
+            - Privilege escalation
+            - Sensitive data exposure
+            - Insecure configuration
+
+            Inspect both the source code and dependency configuration.
+
+            Do not invent vulnerabilities.
+
+            Only report findings supported by evidence.
+
+            Do not modify code.
+
+            If serious vulnerabilities are found,
+            create clear GitHub issues describing them.
+
+      - name: 🧹 Cleanup credentials
+        if: always()
+        run: |
+          git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git" || true
+          rm -f ~/.git-credentials || true
