@@ -425,7 +425,7 @@ jobs:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           PR=${{ github.event.pull_request.number }}
-          gh pr comment "$PR" --body "### 🏁 Pipeline complete — awaiting your decision
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "### 🏁 Pipeline complete — awaiting your decision
           The feature has been built, reviewed, fixed as needed, and independently verified. No open issues.
 
           Reply on this PR with:
