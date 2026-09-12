@@ -12,6 +12,8 @@ from typing import Any, Iterable
 
 from app.core.models import (
     FINAL_JOB_STATUSES,
+    BackupRecord,
+    BackupStatus,
     Account,
     AccountStatus,
     Job,
@@ -962,3 +964,172 @@ async def is_notification_enabled(
     if row is None:
         return True
     return bool(row["enabled"])
+
+
+# ---------------------------------------------------------------- backup settings
+
+#: Canonical keys living in ``app_settings`` for the backup system.
+BACKUP_KEY_ENABLED = "backup_enabled"
+BACKUP_KEY_INTERVAL = "backup_interval_hours"
+BACKUP_KEY_CHAT_ID = "backup_chat_id"
+
+
+async def get_setting(db: Database, key: str) -> str | None:
+    """Read a single ``app_settings`` value (None when absent)."""
+    row = await db.fetch_one("SELECT value FROM app_settings WHERE key=?", (key,))
+    return row["value"] if row else None
+
+
+async def set_setting(db: Database, key: str, value: str) -> None:
+    """Upsert an ``app_settings`` row (idempotent, portable upsert)."""
+    await db.execute(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (key, str(value), now_iso()),
+    )
+
+
+async def get_backup_settings(db: Database) -> dict[str, str]:
+    """Return the three backup setting keys as a dict (missing keys -> '')."""
+    keys = (BACKUP_KEY_ENABLED, BACKUP_KEY_INTERVAL, BACKUP_KEY_CHAT_ID)
+    placeholders = ",".join("?" * len(keys))
+    rows = await db.fetch_all(
+        f"SELECT key, value FROM app_settings WHERE key IN ({placeholders})",
+        keys,
+    )
+    return {r["key"]: r["value"] for r in rows}
+
+
+# ---------------------------------------------------------------- backup records
+
+
+def _backup_row(row) -> BackupRecord:
+    return BackupRecord(
+        id=row["id"],
+        filename=row["filename"],
+        file_size=row["file_size"],
+        status=BackupStatus(row["status"]),
+        created_at=row["created_at"],
+        sent_to=row["sent_to"],
+        error=row["error"],
+    )
+
+
+async def insert_backup(
+    db: Database, *, filename: str, file_size: int, status: BackupStatus
+) -> int:
+    """Insert a new backup record. Returns its id."""
+    return await db.execute(
+        "INSERT INTO backups (filename, file_size, status, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (filename, file_size, status.value, now_iso()),
+    )
+
+
+async def update_backup_status(
+    db: Database, backup_id: int, status: BackupStatus, *,
+    file_size: int | None = None, sent_to: int | None = None,
+    error: str | None = None,
+) -> bool:
+    """Update a backup's terminal fields. Returns True if a row changed.
+
+    Only ``pending``/``running`` records are writable (final states are
+    write-once, mirroring Job finalization per RULES §5)."""
+    sets: list[str] = ["status=?"]
+    params: list[Any] = [status.value]
+    if file_size is not None:
+        sets.append("file_size=?")
+        params.append(file_size)
+    if sent_to is not None:
+        sets.append("sent_to=?")
+        params.append(sent_to)
+    if error is not None:
+        sets.append("error=?")
+        params.append(error)
+    params.append(backup_id)
+    params.extend(
+        {BackupStatus.PENDING.value, BackupStatus.RUNNING.value}
+    )
+    cur = await db.conn.execute(
+        f"UPDATE backups SET {', '.join(sets)} "
+        "WHERE id=? AND status IN (?, ?)",
+        params,
+    )
+    return cur.rowcount > 0
+
+
+async def get_backup(db: Database, backup_id: int) -> BackupRecord | None:
+    row = await db.fetch_one("SELECT * FROM backups WHERE id=?", (backup_id,))
+    return _backup_row(row) if row else None
+
+
+async def list_backups(db: Database, limit: int = 50, offset: int = 0) -> list[BackupRecord]:
+    rows = await db.fetch_all(
+        "SELECT * FROM backups ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    )
+    return [_backup_row(r) for r in rows]
+
+
+async def count_backups(db: Database) -> int:
+    row = await db.fetch_one("SELECT COUNT(*) AS c FROM backups")
+    return int(row["c"]) if row else 0
+
+
+async def last_backup_created_at(db: Database) -> str | None:
+    """Timestamp of the most recent completed backup (ok/sent), for scheduling."""
+    row = await db.fetch_one(
+        "SELECT created_at FROM backups "
+        "WHERE status IN (?, ?) ORDER BY created_at DESC LIMIT 1",
+        (BackupStatus.OK.value, BackupStatus.SENT.value),
+    )
+    return row["created_at"] if row else None
+
+
+async def last_backup_filename(db: Database) -> str | None:
+    """Filename of the most recent completed backup."""
+    row = await db.fetch_one(
+        "SELECT filename FROM backups WHERE status IN (?, ?) "
+        "ORDER BY created_at DESC LIMIT 1",
+        (BackupStatus.OK.value, BackupStatus.SENT.value),
+    )
+    return row["filename"] if row else None
+
+
+async def delete_backup(db: Database, backup_id: int) -> bool:
+    cur = await db.conn.execute("DELETE FROM backups WHERE id=?", (backup_id,))
+    return cur.rowcount > 0
+
+
+async def delete_backups_older_than(db: Database, keep: int) -> int:
+    """Retention pruning: keep only the ``keep`` newest completed (ok/sent)
+    backups, deleting older completed rows from the ledger.  Ordering uses
+    ``created_at DESC, id DESC`` so ties (same-second inserts) resolve
+    deterministically by id.  Returns the number of rows deleted.
+
+    On-disk files beyond the kept set are removed separately by the service
+    (which owns the filesystem).  Standard SQL subquery upsert — no
+    SQLite-isms (RULES §6)."""
+    status_list = ",".join("?" * 2)
+    cur = await db.conn.execute(
+        f"DELETE FROM backups WHERE status IN ({status_list}) "
+        "AND id NOT IN ("
+        f"SELECT id FROM backups WHERE status IN ({status_list}) "
+        "ORDER BY created_at DESC, id DESC LIMIT ? "
+        ")",
+        (
+            BackupStatus.OK.value, BackupStatus.SENT.value,
+            BackupStatus.OK.value, BackupStatus.SENT.value,
+            keep,
+        ),
+    )
+    return cur.rowcount
+
+
+async def count_active_jobs(db: Database) -> int:
+    """Total in-flight jobs across all users (used to block dangerous ops)."""
+    row = await db.fetch_one(
+        "SELECT COUNT(*) AS c FROM jobs WHERE status IN "
+        "('created','validating','queued','running')"
+    )
+    return int(row["c"]) if row else 0

@@ -53,6 +53,17 @@ __all__ = [
     "render_notification_card", "render_notifications_list",
     "notification_event_label", "notification_severity_label",
     "render_notify_settings",
+    "M_BACKUPS_TITLE", "M_BACKUPS_EMPTY", "M_BACKUPS_SUMMARY",
+    "M_BACKUP_CREATED", "M_BACKUP_CREATE_FAILED", "M_BACKUP_SENT",
+    "M_BACKUP_DELETED", "M_BACKUP_RESTORE_DONE", "M_BACKUP_RESTORE_FAILED",
+    "M_BACKUP_RESTORE_BLOCKED", "M_BACKUP_SECURITY_NOTE",
+    "M_BACKUP_SETTINGS", "M_BACKUP_INTERVAL_PROMPT", "M_BACKUP_INTERVAL_INVALID",
+    "M_BACKUP_INTERVAL_SAVED", "M_BACKUP_UPLOAD_PROMPT", "M_BACKUP_UPLOADED_INVALID",
+    "BUT_BACKUPS", "BUT_BACKUPS_SETTINGS", "BUT_BACKUP_NEW", "BUT_BACKUP_EXPORT",
+    "BUT_BACKUP_RESTORE", "BUT_BACKUP_DELETE", "BUT_BACKUP_UPLOAD", "BUT_BACKUP_REFRESH",
+    "backup_status_label", "render_backups_settings",
+    "render_backups_list", "render_backup_card",
+    "fmt_backup_ts",
 ]
 
 # ---------------------------------------------------------------- decorations
@@ -808,6 +819,137 @@ def render_notify_settings(
         lines.append("")
         for aid in admin_ids:
             lines.append(f"›|<code>{aid}</code>")
+    lines.append("")
+    lines.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- backups
+
+
+def fmt_backup_ts(ts: str | None) -> str:
+    """Render a backup timestamp for the admin, or "—"."""
+    from app.core.backup import fmt_ts as _fmt_ts
+
+    return _fmt_ts(ts) if ts else "—"
+
+
+_BAK_STATUS_VIEW: dict[str, str] = {
+    "pending": "قيد الإنشاء",
+    "running": "قيد الإنشاء",
+    "ok": "جاهز",
+    "sent": "مُرسل",
+    "failed": "فشل",
+}
+
+
+def backup_status_label(status: str) -> str:
+    glyph = {
+        "pending": GLYPH_INFO,
+        "running": GLYPH_INFO,
+        "ok": GLYPH_PASS,
+        "sent": GLYPH_PASS,
+        "failed": GLYPH_FAIL,
+    }.get(status, GLYPH_FAIL)
+    return f"{glyph} {_BAK_STATUS_VIEW.get(status, status)}"
+
+
+M_BACKUPS_TITLE = "⟡ لوحة النسخ الاحتياطية"
+M_BACKUPS_EMPTY = "× لا توجد نسخ احتياطية بعد."
+M_BACKUPS_SUMMARY = "← فعل النسخ الدوري أو اضغط نسخة الآن. الاستعادة تستعيد قاعدة البيانات بالكامل."
+M_BACKUP_CREATED = "✅|تم إنشاء النسخة الاحتياطية وإرسالها إلى المشرف."
+M_BACKUP_CREATE_FAILED = "× فشل إنشاء النسخة الاحتياطية: {error}"
+M_BACKUP_SENT = "✅|تم إرسال النسخة إلى المحادثة <code>{chat_id}</code>."
+M_BACKUP_DELETED = "✅|تم حذف النسخة الاحتياطية."
+M_BACKUP_RESTORE_DONE = "✅|تمت استعادة النسخة الاحتياطية بنجاح. تم تحديث قاعدة البيانات."
+M_BACKUP_RESTORE_FAILED = "× فشلت الاستعادة: {error}"
+M_BACKUP_RESTORE_BLOCKED = "× توجد عمليات نشطة الآن، ألغِها أولاً ثم جرّب الاستعادة."
+M_BACKUP_SECURITY_NOTE = (
+    "⟡|تنبيه أمني: الأرشيف يحتوي على قاعدة البيانات مُشفرة ومفتاح Fernet. "
+    "احفظه في مكان آمن ولا تشاركه."
+)
+M_BACKUP_SETTINGS = "⟡ إعدادات النسخ الاحتياطي"
+M_BACKUP_INTERVAL_PROMPT = "<b>⟡ الحد الدوري للنسخ</b>\n↢ أرسل عدد الساعات (الحد الأدنى 1).\n⋆<code>{current}</code>"
+M_BACKUP_INTERVAL_INVALID = "× القيمة غير صالحة. أرسل عدداً صحيحاً من ساعة إلى ١٦٨."
+M_BACKUP_INTERVAL_SAVED = "✅|تم حفظ الإعداد."
+M_BACKUP_UPLOAD_PROMPT = "↢ أرسل ملف الأرشيف المضغوط (.zip) لاستعادته."
+M_BACKUP_UPLOADED_INVALID = "× الملف غير صالح أو لا يحتوي على قاعدة بيانات صالحة."
+
+BUT_BACKUPS = "› النسخ الاحتياطية"
+BUT_BACKUPS_SETTINGS = "≡ الإعدادات"
+BUT_BACKUP_NEW = "› نسخة الآن"
+BUT_BACKUP_EXPORT = "› إرسالها لي"
+BUT_BACKUP_RESTORE = "› استعادة"
+BUT_BACKUP_DELETE = "× حذف"
+BUT_BACKUP_UPLOAD = "› رفع أرشيف"
+BUT_BACKUP_REFRESH = "› تحديث"
+
+
+def render_backups_settings(
+    enabled: bool, interval_hours: int, chat_id: int | None,
+    last_backup: str | None, backup_count: int,
+) -> str:
+    on = "نعم" if enabled else "لا"
+    chat = str(chat_id) if chat_id else "—"
+    lines = [M_BACKUPS_TITLE, "", "⟡ الإعدادات:",
+              f"› النسخ الدوري ↼ <code>{on}</code>",
+              f"› الفاصل الزمني ↼ <code>{interval_hours}</code> ساعة",
+              f"› يُرسل إلى ↼ <code>{chat}</code>",
+              "", "⟡ الحالة:",
+              f"› آخر نسخة ↼ <code>{fmt_backup_ts(last_backup)}</code>",
+              f"› عدد النسخ المحفوظة ↼ <code>{backup_count}</code>",
+              M_BACKUP_SECURITY_NOTE, ""]
+    lines.append(M_BACKUPS_SUMMARY)
+    return "\n".join(lines)
+
+
+def render_backups_list(backups: list[dict[str, Any]], page: int, total_pages: int) -> str:
+    lines = [M_BACKUPS_TITLE, "", "――――――――――――――――――――――"]
+    if not backups:
+        lines.append("")
+        lines.append(M_BACKUPS_EMPTY)
+    else:
+        for b in backups:
+            glyph = backup_status_label(b["status"])[0]
+            ts = fmt_backup_ts(b.get("created_at"))
+            size = b.get("file_size", 0) or 0
+            size_kb = size // 1024
+            sent = "مُرسل" if b.get("sent_to") else ""
+            err = f" › السبب: {esc(b['error'])}" if b.get("error") else ""
+            lines.append(
+                f"{glyph} <code>#{b['id']}</code> {ts} — {size_kb}ك.ب {sent}{err}"
+            )
+    lines.append("")
+    lines.append("――――――――――――――――――――――")
+    nav: list[str] = []
+    if page > 0:
+        nav.append("← السابق")
+    if page < total_pages - 1:
+        nav.append("التالي →")
+    if nav:
+        lines.append(" ".join(nav))
+    lines.append("")
+    lines.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(lines)
+
+
+def render_backup_card(b: dict[str, Any]) -> str:
+    ts = fmt_backup_ts(b.get("created_at"))
+    size = int(b.get("file_size", 0) or 0)
+    size_kb = size // 1024
+    lines = [
+        f"<b>⟡ نسخة احتياطية <code>#{b['id']}</code></b>",
+        f"›|ملف ↼ <code>{esc(b.get('filename') or '')}</code>",
+        f"›|التوقيت ↼ <code>{ts}</code>",
+        f"›|الحجم ↼ <code>{size_kb} ك.ب</code>",
+        f"› الحالة ↼ {backup_status_label(b.get('status', ''))}",
+    ]
+    if b.get("sent_to"):
+        lines.append(f"›|أُرسِلَت إلى ↼ <code>{b['sent_to']}</code>")
+    if b.get("error"):
+        lines.append(f"›|السبب ↼ {esc(b['error'])}")
+    lines.append("")
+    lines.append(M_BACKUP_SECURITY_NOTE)
     lines.append("")
     lines.append("استخدم الأزرار للتنقل ↓")
     return "\n".join(lines)
