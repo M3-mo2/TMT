@@ -15,5 +15,12 @@
       "cycle": 0,
       "result": "clean"
     }
+  ],
+  "human_messages": [
+    {
+      "author": "M3-mo2",
+      "body": "### 🏁 Pipeline complete — awaiting your decision\nThe feature has been built, reviewed, fixed as needed, and independently verified. No open issues.\n\nReply on this PR with:\n- `/merge yes` to squash-merge this PR\n- `/merge no` to stop here (PR stays open, nothing happens automatically)\n\n@M3-mo2",
+      "delivered": false
+    }
   ]
 }
