@@ -188,31 +188,38 @@ jobs:
           fi
           echo "allowed=true" >> "$GITHUB_OUTPUT"
 
-      - name: 🔀 Checkout orchestrator-data branch
-        id: checkout_data
-        if: steps.perm.outputs.allowed == 'true'
-        continue-on-error: true
+      - name: 🔀 Checkout default branch (needed for opencode.json)
+        # Deliberately NOT orchestrator-data — that branch holds only the
+        # tracking file and has no opencode.json, which is exactly what caused
+        # "Model not found" errors here before. The state file itself is read
+        # and written via the Contents API instead (see the prompt below), so
+        # this job never needs to check out orchestrator-data at all.
         uses: actions/checkout@v4
+        if: steps.perm.outputs.allowed == 'true'
         with:
-          ref: ${{ env.DATA_BRANCH }}
           token: ${{ secrets.PAT_TOKEN }}
 
-      - name: ⚠️ Guard — Bootstrap hasn't been run yet
-        if: steps.perm.outputs.allowed == 'true' && steps.checkout_data.outcome == 'failure'
+      - name: 🔎 Verify Bootstrap has run
+        id: bootstrap_check
+        if: steps.perm.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          gh issue comment ${{ github.event.issue.number }} --repo "${{ github.repository }}" --body "⚠️ لسه محتاج تشغّل الـ workflow ده مرة واحدة يدوي عن طريق workflow_dispatch (Bootstrap) قبل ما أقدر أرد — مفيش orchestrator-data branch لسه."
-          exit 1
+          if git ls-remote --exit-code --heads origin "${{ env.DATA_BRANCH }}" > /dev/null 2>&1; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            gh issue comment ${{ github.event.issue.number }} --repo "${{ github.repository }}" --body "⚠️ لسه محتاج تشغّل الـ workflow ده مرة واحدة يدوي عن طريق workflow_dispatch (Bootstrap) قبل ما أقدر أرد — مفيش orchestrator-data branch لسه."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: ⚙️ Configure Git
-        if: steps.perm.outputs.allowed == 'true' && steps.checkout_data.outcome == 'success'
+        if: steps.perm.outputs.allowed == 'true' && steps.bootstrap_check.outputs.ready == 'true'
         run: |
           git config --global user.name "${{ env.BOT_NAME }}"
           git config --global user.email "findlapmn@gmail.com"
 
       - name: 🧠 Run Orchestrator Agent
-        if: steps.perm.outputs.allowed == 'true' && steps.checkout_data.outcome == 'success'
+        if: steps.perm.outputs.allowed == 'true' && steps.bootstrap_check.outputs.ready == 'true'
         uses: anomalyco/opencode/github@latest
         env:
           GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
@@ -234,11 +241,13 @@ jobs:
             1. `gh issue view ${{ github.event.issue.number }} --repo ${{ github.repository }} --comments`
                — this IS your entire memory of this conversation. Read all of it, not just the newest
                comment, since you have no memory outside of it.
-            2. The file `${{ env.STATE_FILE }}` in your current working directory (checked out from the
-               ${{ env.DATA_BRANCH }} branch) — a JSON object with a `delegated_prs` array of
-               `{"pr": <number>, "note": <string>}` for PRs you're tracking. Use it to know which PRs
-               to check when asked for a status update — but ALWAYS live-query GitHub for the actual
-               current state (see below), never trust the note text as up to date.
+            2. Your tracking file lives on a DIFFERENT branch (${{ env.DATA_BRANCH }}) than the one
+               checked out in this workspace, so read it via the Contents API, not from disk:
+                 gh api "repos/${{ github.repository }}/contents/${{ env.STATE_FILE }}?ref=${{ env.DATA_BRANCH }}" --jq '.content' | base64 -d
+               It's a JSON object with a `delegated_prs` array of `{"pr": <number>, "note": <string>}`
+               for PRs you're tracking. Use it to know which PRs to check when asked for a status update
+               — but ALWAYS live-query GitHub for the actual current state (see below), never trust the
+               note text as up to date.
 
             YOUR CAPABILITIES (you have real shell + gh CLI access — use it directly):
 
@@ -280,8 +289,17 @@ jobs:
                   If that PR has no .github/agent-state.json at all (not a pipeline-managed PR), say so
                   and ask the human whether they want you to add the "agent:review" label anyway (the
                   pipeline's Review Agent will still run and read the task from the PR description).
-                - Add this PR's number to your OWN `${{ env.STATE_FILE }}`'s "delegated_prs" array (skip
-                  if already present) so future agent comments on it get relayed here automatically.
+                - Add this PR's number to your OWN tracking file (skip if already present), via the
+                  Contents API — the SAME pattern as above, targeting ${{ env.STATE_FILE }} on the
+                  ${{ env.DATA_BRANCH }} branch instead of the PR's agent-state.json:
+                    gh api "repos/${{ github.repository }}/contents/${{ env.STATE_FILE }}?ref=${{ env.DATA_BRANCH }}" --jq '.content' | base64 -d > /tmp/orch-state.json
+                    jq --argjson pr "<PR>" --arg note "<short note>" \
+                      'if ((.delegated_prs // []) | any(.pr == $pr)) then . else .delegated_prs = ((.delegated_prs // []) + [{"pr":$pr,"note":$note}]) end' \
+                      /tmp/orch-state.json > /tmp/orch-state-new.json
+                    SHA=$(gh api "repos/${{ github.repository }}/contents/${{ env.STATE_FILE }}?ref=${{ env.DATA_BRANCH }}" --jq '.sha')
+                    gh api "repos/${{ github.repository }}/contents/${{ env.STATE_FILE }}" -X PUT \
+                      -f message="chore(orchestrator): track PR <PR>" \
+                      -f content="$(base64 -w0 /tmp/orch-state-new.json)" -f sha="$SHA" -f branch="${{ env.DATA_BRANCH }}"
 
             - Check status of a tracked PR:
                 gh pr view <PR> --repo ${{ github.repository }} --json labels,state,url
@@ -312,10 +330,9 @@ jobs:
                (`gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }} --body "..."`)
                replying in plain, warm, conversational language. Say clearly what you're doing or did,
                and why — never just paste raw command output.
-            2. If you changed `${{ env.STATE_FILE }}` (e.g. tracked a newly delegated PR), commit and
-               push ONLY that file to the ${{ env.DATA_BRANCH }} branch. Run
-               `git pull --rebase origin ${{ env.DATA_BRANCH }}` immediately before committing to reduce
-               the chance of a conflicting write, and retry once if the push is rejected.
+            2. If you tracked a newly delegated PR, you already wrote it to
+               ${{ env.STATE_FILE }} via the Contents API PUT shown above — if that PUT is rejected
+               (e.g. a stale "sha"), just re-fetch the current content and sha and retry it once.
 
   # ============================================================================
   # TRACK NEW BUILDS — auto-detect PRs the pipeline opens, start relaying them
