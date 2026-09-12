@@ -23,5 +23,12 @@
       "cycle": 0,
       "result": "issues_found"
     }
+  ],
+  "human_messages": [
+    {
+      "author": "M3-mo2",
+      "body": "Done. Review complete.\n\n**PR comment posted:** https://github.com/M3-mo2/TMT/pull/13#issuecomment-5646851794\n**State file:** committed as `chore(pipeline): review cycle result` (separate commit on top of the build commit `e3bb351`) and pushed to `origin/agent/feature-34700820433`.\n\n### 🔍 Review Agent — Cycle 0\n\nI verified every concrete code claim in `docs/admin-panel-gaps.md` against the source tree — all headline defects are accurate (IDOR `repositories.py:898/918/928`, cancel double-publish `broadcast.py:315-323` + `677-697`, dead `render_bcast_progress`/`render_notification_card`, the three stubs, missing `SET_LANG` handler, missing menu buttons). Found 2 Low-severity accuracy defects **in the report itself**:\n\n1. **\"four live counters\"** (`docs/admin-panel-gaps.md:60`) — `render_admin_menu` (`texts.py:101`, fed by `menu.py:21-24`) takes/passes exactly **three** args/counters. This contradicts the report's own §1 line 65 which lists three. Fix: \"four\"→\"three\".\n2. **Misattributed line ref** (`docs/admin-panel-gaps.md:645`, prioritised table item #4) — cites `texts.py:648,738`, but `texts.py:648` is `render_bcast_progress` (a *broadcast* renderer), not notifications; `render_notification_card` is at `texts.py:738`. Fix: drop `648`.\n\nState file updated: `status=\"issues_found\"`, `findings` = 2 entries, `history` += `{agent:\"review\",cycle:0,result:\"issues_found\"}`. No `human_messages` exist on this branch's state file, so there was no pending human follow-up to acknowledge.\n\n[github run](/M3-mo2/TMT/actions/runs/34701588078)",
+      "delivered": false
+    }
   ]
 }
