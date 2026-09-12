@@ -2,7 +2,9 @@
   "task": "I want a comprehensive report on the most important problems that must be fixed in TMT as a whole. Start now. I only want a report. I don't want any fixes right now.",
   "max_cycles": 150,
   "cycle": 0,
-  "status": "building",
+  "status": "clean",
   "findings": [],
-  "history": []
+  "history": [
+    {"agent": "review", "cycle": 0, "result": "clean"}
+  ]
 }
