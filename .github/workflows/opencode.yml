@@ -20,6 +20,18 @@
 #        ▼
 #   [MERGE GATE] → checks the commenter has write/admin access, then merges (or not)
 #
+#   [CHAT] (side channel, any time) → any PR comment that is NOT "/merge yes"/"/merge no"
+#          is treated as a free-form instruction/question to the pipeline, gated by the
+#          SAME write/admin permission check as merge_gate:
+#            - if the pipeline is paused (agent:blocked or agent:decision), the comment
+#              is recorded and the PR is routed straight to [FIX], which reads it, replies
+#              to it in its own PR comment, applies any requested code change, then hands
+#              back to [REVIEW] automatically — resuming the normal loop.
+#            - if the pipeline is mid-cycle (review/fix/verify actively running), the
+#              comment is just recorded; whichever agent runs next reads it and replies.
+#            - if the PR's pipeline already finished (agent:merged / agent:closed-by-human),
+#              the commenter gets a one-line notice instead of silence.
+#
 # STATE MACHINE:
 #   All routing between stages is done via PR labels (not by scanning comment text),
 #   because label events cannot be accidentally re-triggered by an agent quoting a
@@ -30,24 +42,37 @@
 #   agent runs — never by the LLM itself. This keeps the loop-prevention logic
 #   100% deterministic and not dependent on the model "remembering" to behave.
 #
+#   Free-form human comments are carried in the same state file under
+#   "human_messages": [{"author","body","delivered"}]. They are appended by the
+#   deterministic "chat" job (never by an LLM), and flipped to delivered:true by the
+#   next deterministic routing/handback step that runs after an agent has had a chance
+#   to read and address them — same "bash writes state, LLM only reads it" rule as
+#   everything else here.
+#
 # SHARED CONTEXT:
 #   Every agent run is stateless (fresh container, no memory of previous runs).
 #   Context is carried forward explicitly via a committed file on the PR branch:
 #   .github/agent-state.json — containing the original task, the cycle counter,
-#   the safety ceiling, the latest findings, and a short history log. Every agent
-#   is instructed to read this file (and `gh pr view --comments`) before acting.
+#   the safety ceiling, the latest findings, pending human messages, and a short
+#   history log. Every agent is instructed to read this file (and
+#   `gh pr view --comments`) before acting.
 #
 # REQUIRED ONE-TIME SETUP:
 #   1. Secret PAT_TOKEN — a Personal Access Token for the bot account (repo + workflow scopes).
-#   2. Update BOT_NAME below (workflow env AND the literal string inside merge_gate's `if:`)
-#      to match the GitHub username tied to PAT_TOKEN.
+#   2. Update BOT_NAME below (workflow env, AND the literal string inside merge_gate's `if:`,
+#      AND the literal string inside chat's `if:` — env context isn't available in job-level
+#      `if:` conditions, so all three must be kept in sync by hand) to match the GitHub
+#      username tied to PAT_TOKEN.
 #   3. Nothing else — pipeline labels are created automatically on first run.
 #
 # SECURITY NOTE:
 #   issue_comment runs with PAT_TOKEN regardless of who commented, which is why
-#   merge_gate double-checks the commenter's actual repo permission via the API
-#   before ever calling `gh pr merge`. On a public repo, treat this as a real
-#   attack surface — don't loosen that permission check.
+#   merge_gate AND chat both double-check the commenter's actual repo permission via
+#   the API before ever calling `gh pr merge` or handing an instruction to an agent.
+#   On a public repo, treat this as a real attack surface — don't loosen either check.
+#   Without it, any random public commenter could redirect a paid LLM agent to push
+#   arbitrary changes to the PR branch (nothing reaches main without a separate
+#   write/admin "/merge yes", but it's still a cost and integrity risk worth blocking).
 # ==============================================================================
 
 name: 🤖 Multi-Agent Feature Pipeline
@@ -215,7 +240,10 @@ jobs:
             Before anything else, read the full context:
             - `gh pr view ${{ github.event.pull_request.number }} --comments`
             - the file at $STATE_FILE on this branch (path: .github/agent-state.json), especially the
-              "task" and "history" fields, so you know what was actually asked for.
+              "task" and "history" fields, so you know what was actually asked for. Also check
+              "human_messages" for any entry with "delivered": false — a human commented directly on this
+              PR; briefly acknowledge it in your comment even though only the Fix Agent can act on code
+              changes it requests.
 
             YOUR JOB:
             Review the complete diff of this PR as a senior engineer. Look for bugs, logic errors, security
@@ -235,7 +263,10 @@ jobs:
                  {"title","severity","file","detail"} objects for THIS cycle only (overwrite, don't append)
                - if clean: set "findings" to an empty array
                - append one object to "history": {"agent":"review","cycle":<current cycle>,"result":"<status>"}
-               - commit and push ONLY this file, message: "chore(pipeline): review cycle result"
+               - before committing, run `git pull --rebase origin ${{ github.event.pull_request.head.ref }}`
+                 to reduce the chance of a conflicting write, then commit and push ONLY this file,
+                 message: "chore(pipeline): review cycle result". If the push is rejected, pull --rebase
+                 again and retry once.
 
             RULES:
             - Do NOT add or remove any "agent:*" label yourself — the workflow does this automatically based
@@ -245,11 +276,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          git pull origin "${{ github.event.pull_request.head.ref }}"
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR=${{ github.event.pull_request.number }}
+
+          # Always take the remote copy of the branch as ground truth instead of
+          # `git pull` (a merge), which can leave real conflict markers inside
+          # agent-state.json if another run touched it at the same time.
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git reset --hard "origin/$BRANCH"
+
           STATUS=$(jq -r '.status' "$STATE_FILE")
           CYCLE=$(jq -r '.cycle' "$STATE_FILE")
           MAXC=$(jq -r '.max_cycles' "$STATE_FILE")
-          PR=${{ github.event.pull_request.number }}
+
+          # Mark any human message the Review Agent just acknowledged as delivered.
+          if jq -e '(.human_messages // []) | any(.delivered == false)' "$STATE_FILE" > /dev/null; then
+            jq '.human_messages = ((.human_messages // []) | map(.delivered = true))' \
+              "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
+            git add "$STATE_FILE"
+            git commit -m "chore(pipeline): mark human messages delivered"
+            git push origin "$BRANCH" || { git fetch origin "$BRANCH"; git reset --hard "origin/$BRANCH"; }
+          fi
 
           gh pr edit "$PR" --remove-label "agent:review"
 
@@ -272,10 +320,33 @@ jobs:
           fi
 
           NEWCYCLE=$((CYCLE + 1))
-          jq --argjson c "$NEWCYCLE" '.cycle = $c' "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
-          git add "$STATE_FILE"
-          git commit -m "chore(pipeline): advance to cycle $NEWCYCLE"
-          git push origin "${{ github.event.pull_request.head.ref }}"
+
+          # Retry loop: if the push is rejected because something else wrote to
+          # this branch between our reset and our push, re-fetch, redo the edit
+          # on top of the fresh copy, and try again — instead of merging (and
+          # possibly conflicting) or just failing outright.
+          for ATTEMPT in 1 2 3 4 5; do
+            jq --argjson c "$NEWCYCLE" '.cycle = $c' "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
+            git add "$STATE_FILE"
+            git commit -m "chore(pipeline): advance to cycle $NEWCYCLE"
+
+            if git push origin "$BRANCH"; then
+              break
+            fi
+
+            echo "⚠️ Push rejected (attempt $ATTEMPT/5) — refetching and retrying..."
+            git reset --soft HEAD~1
+            git fetch origin "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+            sleep $((RANDOM % 3 + 1))
+
+            if [ "$ATTEMPT" -eq 5 ]; then
+              echo "❌ Failed to push agent-state.json after 5 attempts." >&2
+              gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ Pipeline could not update \`agent-state.json\` after several retries (concurrent write conflict). @${{ github.repository_owner }} please check the Actions log for run ${{ github.run_id }}."
+              exit 1
+            fi
+          done
+
           gh pr edit "$PR" --add-label "agent:fix"
 
   # ============================================================================
@@ -310,24 +381,57 @@ jobs:
             You are the FIX AGENT in a multi-agent pipeline.
 
             Read .github/agent-state.json on this branch — it contains "findings" from the last Review or
-            Verify Agent pass (current cycle) and the original "task".
+            Verify Agent pass (current cycle) and the original "task". It may also contain a "human_messages"
+            array — free-form comments a human posted directly on the PR. Treat any entry with
+            "delivered": false as addressed to you right now.
 
             YOUR JOB:
-            Fix EVERY finding listed. Do not introduce unrelated changes. Run relevant tests/build/lint after
-            fixing and confirm they actually pass. Never fake a passing test.
+            1. If there are undelivered human_messages, read each one and actually do what it asks (answer a
+               question, change direction, implement a specific request) in addition to the review findings.
+               If a message conflicts with a review finding, the human's message wins — they're the one paying
+               attention right now.
+            2. Fix EVERY finding listed. Do not introduce unrelated changes. Run relevant tests/build/lint after
+               fixing and confirm they actually pass. Never fake a passing test.
 
             OUTPUT:
             1. Commit and push your fixes to this branch.
             2. Post ONE PR comment starting with header "### 🛠️ Fix Agent — Cycle <current cycle>" explaining
-               what you changed for each finding.
+               what you changed for each finding, AND a short reply to each undelivered human message you saw
+               (quote or paraphrase what they asked, then say what you did about it).
             3. Do NOT edit .github/agent-state.json and do NOT touch any "agent:*" label — the workflow hands
-               this back to the Review Agent automatically.
+               this back to the Review Agent automatically, and also marks your human_messages as delivered.
 
-      - name: 🔁 Hand back to Review Agent
+      - name: 🔁 Mark messages delivered + hand back to Review Agent
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          BRANCH=$(git branch --show-current)
           PR=${{ github.event.pull_request.number }}
+
+          for ATTEMPT in 1 2 3 4 5; do
+            jq '.human_messages = ((.human_messages // []) | map(.delivered = true))' \
+              "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
+
+            if ! git diff --quiet -- "$STATE_FILE"; then
+              git add "$STATE_FILE"
+              git commit -m "chore(pipeline): mark human messages delivered"
+              if git push origin "$BRANCH"; then
+                break
+              fi
+              echo "⚠️ Push rejected (attempt $ATTEMPT/5) — refetching and retrying..."
+              git reset --soft HEAD~1
+              git fetch origin "$BRANCH"
+              git reset --hard "origin/$BRANCH"
+              sleep $((RANDOM % 3 + 1))
+            else
+              break
+            fi
+
+            if [ "$ATTEMPT" -eq 5 ]; then
+              echo "❌ Failed to mark messages delivered after 5 attempts." >&2
+            fi
+          done
+
           gh pr edit "$PR" --remove-label "agent:fix" --add-label "agent:review"
 
   # ============================================================================
@@ -367,7 +471,9 @@ jobs:
                package.json scripts, Makefile, etc.). Report REAL command output, never fabricate results.
             2. Confirm the implementation genuinely satisfies the original task described in
                .github/agent-state.json ("task" field) — not just "no errors", but "does what was asked".
-            3. Do NOT modify code.
+            3. Check "human_messages" in the state file for any entry with "delivered": false and briefly
+               acknowledge it in your comment (only the Fix Agent can act on code-change requests from it).
+            4. Do NOT modify code.
 
             OUTPUT (do both):
             1. Post ONE PR comment starting with header "### ✅ Verify Agent" with a summary of the real
@@ -376,17 +482,33 @@ jobs:
                - set "status" to "clean" (ready to ask the human) or "issues_found"
                - if issues_found: replace "findings" with the new problems (same schema as Review Agent uses)
                - append to "history": {"agent":"verify","cycle":<current cycle>,"result":"<status>"}
-               - commit and push ONLY this file.
+               - before committing, run `git pull --rebase origin ${{ github.event.pull_request.head.ref }}`
+                 to reduce the chance of a conflicting write, then commit and push ONLY this file. If the
+                 push is rejected, pull --rebase again and retry once.
 
       - name: 🧭 Route based on verify result
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          git pull origin "${{ github.event.pull_request.head.ref }}"
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          PR=${{ github.event.pull_request.number }}
+
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git reset --hard "origin/$BRANCH"
+
           STATUS=$(jq -r '.status' "$STATE_FILE")
           CYCLE=$(jq -r '.cycle' "$STATE_FILE")
           MAXC=$(jq -r '.max_cycles' "$STATE_FILE")
-          PR=${{ github.event.pull_request.number }}
+
+          # Mark any human message the Verify Agent just acknowledged as delivered.
+          if jq -e '(.human_messages // []) | any(.delivered == false)' "$STATE_FILE" > /dev/null; then
+            jq '.human_messages = ((.human_messages // []) | map(.delivered = true))' \
+              "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
+            git add "$STATE_FILE"
+            git commit -m "chore(pipeline): mark human messages delivered"
+            git push origin "$BRANCH" || { git fetch origin "$BRANCH"; git reset --hard "origin/$BRANCH"; }
+          fi
 
           gh pr edit "$PR" --remove-label "agent:verify"
 
@@ -403,10 +525,29 @@ jobs:
           fi
 
           NEWCYCLE=$((CYCLE + 1))
-          jq --argjson c "$NEWCYCLE" '.cycle = $c' "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
-          git add "$STATE_FILE"
-          git commit -m "chore(pipeline): verify found issues, advance to cycle $NEWCYCLE"
-          git push origin "${{ github.event.pull_request.head.ref }}"
+
+          for ATTEMPT in 1 2 3 4 5; do
+            jq --argjson c "$NEWCYCLE" '.cycle = $c' "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
+            git add "$STATE_FILE"
+            git commit -m "chore(pipeline): verify found issues, advance to cycle $NEWCYCLE"
+
+            if git push origin "$BRANCH"; then
+              break
+            fi
+
+            echo "⚠️ Push rejected (attempt $ATTEMPT/5) — refetching and retrying..."
+            git reset --soft HEAD~1
+            git fetch origin "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+            sleep $((RANDOM % 3 + 1))
+
+            if [ "$ATTEMPT" -eq 5 ]; then
+              echo "❌ Failed to push agent-state.json after 5 attempts." >&2
+              gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ Pipeline could not update \`agent-state.json\` after several retries (concurrent write conflict). @${{ github.repository_owner }} please check the Actions log for run ${{ github.run_id }}."
+              exit 1
+            fi
+          done
+
           gh pr edit "$PR" --add-label "agent:fix"
 
   # ============================================================================
@@ -468,3 +609,128 @@ jobs:
             gh pr comment "$PR" --body "👍 Got it — leaving this PR open without merging."
             gh pr edit "$PR" --remove-label "agent:decision" --add-label "agent:closed-by-human"
           fi
+
+  # ============================================================================
+  # STAGE 6 — CHAT RELAY (free-form comments on the PR, outside /merge commands)
+  # ============================================================================
+  # Triggers on ANY new PR comment that is NOT "/merge yes"/"/merge no" (that stays
+  # merge_gate's job) AND only while the pipeline is actively alive on this PR
+  # (one of the five non-terminal labels is present). Gated by the same write/admin
+  # permission check as merge_gate — see SECURITY NOTE at the top of this file.
+  chat:
+    name: 💬 Chat Relay
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login != 'mohamed-AFYU' &&
+      !startsWith(github.event.comment.body, '/merge yes') &&
+      !startsWith(github.event.comment.body, '/merge no') &&
+      (contains(github.event.issue.labels.*.name, 'agent:review') ||
+       contains(github.event.issue.labels.*.name, 'agent:fix') ||
+       contains(github.event.issue.labels.*.name, 'agent:verify') ||
+       contains(github.event.issue.labels.*.name, 'agent:blocked') ||
+       contains(github.event.issue.labels.*.name, 'agent:decision'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔐 Check commenter permission
+        id: perm
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+        run: |
+          PR=${{ github.event.issue.number }}
+          PERM=$(gh api "repos/${{ github.repository }}/collaborators/${COMMENT_AUTHOR}/permission" --jq .permission)
+          if [ "$PERM" != "admin" ] && [ "$PERM" != "write" ]; then
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ @${COMMENT_AUTHOR} doesn't have permission to direct the pipeline on this repo. Only \`/merge yes\`/\`/merge no\` from the pipeline owner is handled without write access."
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.perm.outputs.allowed == 'true'
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: ⚙️ Configure Git
+        if: steps.perm.outputs.allowed == 'true'
+        run: |
+          git config --global user.name "${{ env.BOT_NAME }}"
+          git config --global user.email "findlapmn@gmail.com"
+
+      - name: 🔀 Checkout PR branch
+        id: pr_branch
+        if: steps.perm.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          PR=${{ github.event.issue.number }}
+          gh pr checkout "$PR" --repo "${{ github.repository }}"
+          echo "branch=$(git branch --show-current)" >> "$GITHUB_OUTPUT"
+
+      - name: 📝 Record the message and route it
+        if: steps.perm.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+        run: |
+          PR=${{ github.event.issue.number }}
+          BRANCH="${{ steps.pr_branch.outputs.branch }}"
+
+          for ATTEMPT in 1 2 3 4 5; do
+            jq --arg author "$COMMENT_AUTHOR" --arg body "$COMMENT_BODY" \
+              '.human_messages = ((.human_messages // []) + [{"author":$author,"body":$body,"delivered":false}])' \
+              "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
+            git add "$STATE_FILE"
+            git commit -m "chore(pipeline): record human message from $COMMENT_AUTHOR"
+
+            if git push origin "$BRANCH"; then
+              break
+            fi
+
+            echo "⚠️ Push rejected (attempt $ATTEMPT/5) — refetching and retrying..."
+            git reset --soft HEAD~1
+            git fetch origin "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+            sleep $((RANDOM % 3 + 1))
+
+            if [ "$ATTEMPT" -eq 5 ]; then
+              echo "❌ Failed to record human message after 5 attempts." >&2
+              gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ Couldn't record your message due to a write conflict — please try again in a moment. @${COMMENT_AUTHOR}"
+              exit 1
+            fi
+          done
+
+          PAUSED_LABEL=$(gh pr view "$PR" --repo "${{ github.repository }}" --json labels --jq \
+            '[.labels[].name] | map(select(. == "agent:blocked" or . == "agent:decision")) | .[0] // empty')
+
+          if [ -n "$PAUSED_LABEL" ]; then
+            gh pr edit "$PR" --repo "${{ github.repository }}" --remove-label "$PAUSED_LABEL" --add-label "agent:fix"
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body "👋 Got it @${COMMENT_AUTHOR} — picking this up now. The Fix Agent will reply here once it's looked at your message."
+          else
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body "👋 Noted @${COMMENT_AUTHOR} — the pipeline is mid-cycle right now; the next agent that runs will read and reply to your message."
+          fi
+
+  # ============================================================================
+  # STAGE 7 — CHAT (pipeline already finished) — one-line notice instead of silence
+  # ============================================================================
+  chat_closed_notice:
+    name: 💬 Chat (pipeline finished)
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login != 'mohamed-AFYU' &&
+      !startsWith(github.event.comment.body, '/merge yes') &&
+      !startsWith(github.event.comment.body, '/merge no') &&
+      (contains(github.event.issue.labels.*.name, 'agent:merged') ||
+       contains(github.event.issue.labels.*.name, 'agent:closed-by-human'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: 💬 Let the commenter know the pipeline already ended
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          PR=${{ github.event.issue.number }}
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "ℹ️ This PR's pipeline already finished (merged or closed) — I'm not picking up new instructions here. Start a new run with workflow_dispatch if you'd like more changes."
