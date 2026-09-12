@@ -4,7 +4,7 @@ from __future__ import annotations
 from aiogram import Router
 
 from app.bot.routers.admin.filters import IsAdmin
-from app.bot.routers.admin import menu, stats, broadcast, users, search, channels, backups, settings
+from app.bot.routers.admin import menu, stats, broadcast, users, search, channels, backups, settings, notifications
 
 router = Router(name="admin")
 router.message.filter(IsAdmin())
@@ -18,3 +18,4 @@ router.include_router(search.router)
 router.include_router(channels.router)
 router.include_router(backups.router)
 router.include_router(settings.router)
+router.include_router(notifications.router)

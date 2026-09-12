@@ -50,6 +50,7 @@ def test_build_dispatcher_wires_everything() -> None:
     assert dp["config"] is config
     for key in ("db", "accounts", "jobs", "logins", "pool", "reporter"):
         assert dp[key] is getattr(fakes, key)
+    assert dp["notifications"] is None  # not passed → defaults to None
     # user gate registered as outer middleware on Update
     middleware = dp.update.outer_middleware
     assert any(isinstance(getattr(m, "__self__", m), UserGateMiddleware) for m in middleware)
@@ -247,3 +248,98 @@ async def test_gate_clears_when_user_already_member(db: Database) -> None:
     await mw(handler, event, data)
     assert len(called) == 1  # handler called — gate auto-cleared
     assert await repo.is_gate_cleared(db, 42)  # gate was set in DB
+
+
+# ---------------------------------------------------------------- user_joined event
+
+
+async def test_middleware_publishes_system_event_for_new_user(db: Database) -> None:
+    """When bus is provided, the middleware publishes a SystemEvent for new users."""
+    from app.core.events import EventBus, SystemEvent
+    from app.bot.middlewares import UserGateMiddleware
+
+    bus = EventBus()
+    captured: list[Any] = []
+
+    async def handler(ev: Any) -> None:
+        captured.append(ev)
+
+    bus.subscribe(handler)
+
+    mw = UserGateMiddleware(db, bus=bus)
+    bot = _FakeBot()
+
+    msg = SimpleNamespace(
+        from_user=_FakeUser(42, first_name="سارة"),
+        chat=_FakeChat(),
+        text="/start",
+    )
+    async def _answer(*a: Any, **kw: Any) -> Any:
+        return None
+    msg.answer = _answer
+
+    async def passthrough(ev: Any, d: dict[str, Any]) -> str:
+        return "ok"
+
+    await mw(passthrough, _FakeUpdate(msg), {"bot": bot})
+    # A user_joined SystemEvent was published
+    join_events = [e for e in captured if isinstance(e, SystemEvent) and e.event_type == "user_joined"]
+    assert len(join_events) == 1
+    assert join_events[0].data["user_id"] == 42
+    assert "سارة" in join_events[0].body  # name present in body
+
+
+async def test_middleware_no_event_for_returning_user(db: Database) -> None:
+    """A second update from the same user does NOT publish user_joined."""
+    from app.core.events import EventBus, SystemEvent
+    from app.bot.middlewares import UserGateMiddleware
+
+    bus = EventBus()
+    captured: list[Any] = []
+
+    async def handler(ev: Any) -> None:
+        captured.append(ev)
+
+    bus.subscribe(handler)
+
+    mw = UserGateMiddleware(db, bus=bus)
+    bot = _FakeBot()
+
+    # First call: new user → publishes
+    msg = SimpleNamespace(
+        from_user=_FakeUser(42), chat=_FakeChat(), text="/start",
+    )
+    async def _answer(*a: Any, **kw: Any) -> Any:
+        return None
+    msg.answer = _answer
+
+    async def passthrough(ev: Any, d: dict[str, Any]) -> str:
+        return "ok"
+
+    await mw(passthrough, _FakeUpdate(msg), {"bot": bot})
+    await mw(passthrough, _FakeUpdate(msg), {"bot": bot})
+    join_events = [e for e in captured if isinstance(e, SystemEvent) and e.event_type == "user_joined"]
+    assert len(join_events) == 1
+
+
+async def test_middleware_no_bus_no_event(db: Database) -> None:
+    """Without a bus, no SystemEvent is published (backward compatible)."""
+    from app.core.events import SystemEvent
+    from app.bot.middlewares import UserGateMiddleware
+
+    mw = UserGateMiddleware(db)  # no bus
+    bot = _FakeBot()
+    msg = SimpleNamespace(
+        from_user=_FakeUser(42), chat=_FakeChat(), text="/start",
+    )
+    async def _answer(*a: Any, **kw: Any) -> Any:
+        return None
+    msg.answer = _answer
+
+    async def passthrough(ev: Any, d: dict[str, Any]) -> str:
+        return "ok"
+
+    await mw(passthrough, _FakeUpdate(msg), {"bot": bot})
+    # No exception, no event
+    rows = await db.fetch_all("SELECT 1 FROM users WHERE id=42")
+    assert len(rows) == 1  # user still created

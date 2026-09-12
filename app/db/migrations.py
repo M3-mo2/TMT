@@ -231,6 +231,47 @@ ALTER TABLE users ADD COLUMN gate_cleared INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE channels ADD COLUMN type TEXT NOT NULL DEFAULT 'channel';
 """
 
+# v10: Notification System — a persistent system-event log that the admin panel
+# reads, plus per-admin subscription toggles so an operator can silence event
+# types they do not care about.  Both tables are append-only-compatible
+# (ALTER TABLE ADD COLUMN / CREATE TABLE — no SQLite-isms, RULES §6).
+#
+# ``notifications`` is the write-once inbox: ``delivered`` records whether a
+# Telegram DM was sent to the owner; ``read_at`` records when the admin
+# acknowledges it in-panel.  ``notification_settings`` lets an admin mute
+# specific event types rather than turning off all alerts globally.
+#
+# ``owner_id`` is a plain INTEGER (no FK) because admin IDs come from the
+# ``ADMIN_IDS`` config and may not exist in ``users`` yet — the notification
+# is routed to whoever holds that Telegram id, regardless of whether they have
+# a bot account row.
+_V10 = """
+CREATE TABLE notifications (
+    id INTEGER PRIMARY KEY,
+    owner_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'info',
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    delivered INTEGER NOT NULL DEFAULT 0,
+    read_at TEXT,
+    dismissed INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE notification_settings (
+    owner_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(owner_id, event_type)
+);
+
+CREATE INDEX idx_notifications_owner ON notifications(owner_id);
+CREATE INDEX idx_notifications_unread ON notifications(owner_id, read_at, dismissed)
+    WHERE read_at IS NULL AND dismissed = 0;
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
@@ -241,6 +282,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (7, _V7),
     (8, _V8),
     (9, _V9),
+    (10, _V10),
 ]
 
 

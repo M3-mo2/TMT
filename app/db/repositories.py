@@ -36,13 +36,21 @@ async def upsert_user(
     first_name: str | None = None,
     last_name: str | None = None,
     username: str | None = None,
-) -> None:
+) -> bool:
     """Insert the user, or refresh their contact name + ``updated_at``.
 
     Name columns use ``COALESCE`` so a name-less caller (``account_service``
     save_login) refreshes ``updated_at`` without ever clobbering a name that the
-    middleware already captured (RULES §3: never lose data silently)."""
+    middleware already captured (RULES §3: never lose data silently).
+
+    Returns ``True`` when the user was *new* (first contact), ``False`` when
+    this was an update to an existing row.  Callers that do not need the
+    distinction (all current callers except the middleware) may simply ignore
+    the return value."""
     ts = now_iso()
+    existing = await db.fetch_one(
+        "SELECT 1 FROM users WHERE id=?", (user_id,)
+    )
     await db.execute(
         "INSERT INTO users (id, first_name, last_name, username, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?) "
@@ -53,6 +61,7 @@ async def upsert_user(
         "updated_at=excluded.updated_at",
         (user_id, first_name, last_name, username, ts, ts),
     )
+    return existing is None
 
 
 async def is_user_blocked(db: Database, user_id: int) -> bool:
@@ -812,3 +821,144 @@ async def count_recipients(db: Database, broadcast_id: int) -> dict[str, int]:
         "skipped": int(row["skipped"] or 0),
         "delivered": int(row["delivered"] or 0),
     }
+
+
+# ---------------------------------------------------------------- notifications
+
+
+async def create_notification(
+    db: Database,
+    *,
+    owner_id: int,
+    event_type: str,
+    severity: str = "info",
+    title: str = "",
+    body: str = "",
+    data: dict[str, Any] | None = None,
+) -> int:
+    """Insert a notification row for *owner_id* (an admin id).
+
+    Returns the new notification id.  ``created_at`` is set in application code
+    via ``now_iso()`` (RULES §6)."""
+    return await db.execute(
+        "INSERT INTO notifications "
+        "(owner_id, event_type, severity, title, body, data, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            owner_id,
+            event_type,
+            severity,
+            title,
+            body,
+            json.dumps(data or {}, ensure_ascii=False),
+            now_iso(),
+        ),
+    )
+
+
+async def list_notifications(
+    db: Database,
+    owner_id: int,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    unread_only: bool = False,
+    include_dismissed: bool = False,
+) -> list[dict[str, Any]]:
+    """Return notification rows for *owner_id*, newest first.
+
+    ``unread_only`` filters to rows where ``read_at IS NULL``.
+    ``include_dismissed`` controls whether dismissed rows appear (default:
+    excluded, mirroring a UI inbox).  ``offset`` supports pagination."""
+    where: list[str] = ["owner_id=?"]
+    params: list[Any] = [owner_id]
+    if unread_only:
+        where.append("read_at IS NULL")
+    if not include_dismissed:
+        where.append("dismissed = 0")
+    clause = " AND ".join(where)
+    rows = await db.fetch_all(
+        f"SELECT * FROM notifications WHERE {clause} "
+        "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+        (*params, limit, offset),
+    )
+    return [dict(row) for row in rows]
+
+
+async def count_unread_notifications(db: Database, owner_id: int) -> int:
+    """Count unread, non-dismissed notifications for *owner_id*."""
+    row = await db.fetch_one(
+        "SELECT COUNT(*) AS c FROM notifications "
+        "WHERE owner_id=? AND read_at IS NULL AND dismissed=0",
+        (owner_id,),
+    )
+    return int(row["c"]) if row else 0
+
+
+async def mark_notification_read(db: Database, notification_id: int) -> bool:
+    """Mark a single notification as read; returns True if a row was updated."""
+    cur = await db.conn.execute(
+        "UPDATE notifications SET read_at=? "
+        "WHERE id=? AND read_at IS NULL",
+        (now_iso(), notification_id),
+    )
+    return cur.rowcount > 0
+
+
+async def mark_all_notifications_read(db: Database, owner_id: int) -> int:
+    """Mark all unread notifications for *owner_id* as read; returns affected count."""
+    cur = await db.conn.execute(
+        "UPDATE notifications SET read_at=? "
+        "WHERE owner_id=? AND read_at IS NULL",
+        (now_iso(), owner_id),
+    )
+    return cur.rowcount
+
+
+async def dismiss_notification(db: Database, notification_id: int) -> bool:
+    """Dismiss (hide) a notification; returns True if a row was updated."""
+    cur = await db.conn.execute(
+        "UPDATE notifications SET dismissed=1, read_at=COALESCE(read_at, ?) "
+        "WHERE id=? AND dismissed=0",
+        (now_iso(), notification_id),
+    )
+    return cur.rowcount > 0
+
+
+async def delete_notification(db: Database, notification_id: int) -> bool:
+    """Permanently delete a notification row; returns True if a row was deleted."""
+    cur = await db.conn.execute(
+        "DELETE FROM notifications WHERE id=?", (notification_id,)
+    )
+    return cur.rowcount > 0
+
+
+async def set_notification_setting(
+    db: Database, owner_id: int, event_type: str, enabled: bool
+) -> None:
+    """Enable or disable notifications of *event_type* for *owner_id*.
+
+    Idempotent upsert (no SQLite-isms, portable to PostgreSQL)."""
+    await db.execute(
+        "INSERT INTO notification_settings (owner_id, event_type, enabled) "
+        "VALUES (?, ?, ?) "
+        "ON CONFLICT(owner_id, event_type) DO UPDATE SET enabled=excluded.enabled",
+        (owner_id, event_type, 1 if enabled else 0),
+    )
+
+
+async def is_notification_enabled(
+    db: Database, owner_id: int, event_type: str
+) -> bool:
+    """Check whether notifications of *event_type* are enabled for *owner_id*.
+
+    Missing rows default to enabled (fail-open at insert time when the
+    NotificationService logs a row, so the default is the safe one)."""
+    row = await db.fetch_one(
+        "SELECT enabled FROM notification_settings "
+        "WHERE owner_id=? AND event_type=?",
+        (owner_id, event_type),
+    )
+    if row is None:
+        return True
+    return bool(row["enabled"])

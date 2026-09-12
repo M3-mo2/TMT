@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from app.config import Config
 from app.core.account_service import ServiceError
-from app.core.events import EventBus, JobFinishedEvent, JobProgressEvent
+from app.core.events import EventBus, JobFinishedEvent, JobProgressEvent, SystemEvent
 from app.core.models import (
     FINAL_JOB_STATUSES,
     AccountStatus,
@@ -79,6 +79,44 @@ def _format_remaining(remaining: timedelta) -> str:
     if hours:
         return f"{hours} ساعة و {minutes} دقيقة"
     return f"{minutes} دقيقة"
+
+
+def _job_final_event(
+    status: JobStatus,
+    job_id: int,
+    invited: int | None,
+    skipped: int | None,
+    failed: int | None,
+    error: str | None,
+) -> tuple[str, str, str]:
+    """Map a finished job status to (event_type, severity, title) for the
+    system-event bus.  Centralised here so both ``_finalize`` and
+    ``cancel_job`` agree on naming."""
+    if status is JobStatus.COMPLETED:
+        return ("job_completed", "info", "✅|اكتملت عملية نقل")
+    if status is JobStatus.FAILED:
+        return ("job_failed", "error", "×|فشلت عملية نقل")
+    if status is JobStatus.CANCELLED:
+        return ("job_cancelled", "info", "↺|ألغيت عملية نقل")
+    if status is JobStatus.INTERRUPTED:
+        return ("job_interrupted", "warning", "⟡|وقفت عملية نقل")
+    return ("job_completed", "info", "✅|اكتملت عملية نقل")
+
+
+def _job_final_body(
+    job_id: int,
+    status: JobStatus,
+    invited: int | None,
+    skipped: int | None,
+    failed: int | None,
+    error: str | None,
+) -> str:
+    """Render a concise Arabic body for a finished-job system event."""
+    parts = [f"⟡|العملية <code>#{job_id}</code>: {invited or 0} أضيف, "
+             f"{skipped or 0} تم تخطيها, {failed or 0} خالد"]
+    if error:
+        parts.append(f"›|السبب: <code>{error}</code>")
+    return "\n".join(parts)
 
 
 class JobManager:
@@ -225,6 +263,23 @@ class JobManager:
                         error=None,
                     )
                 )
+                try:
+                    event_type, severity, title = _job_final_event(
+                        JobStatus.CANCELLED, job_id, job.invited, job.skipped, job.failed, None
+                    )
+                    await self._bus.publish(
+                        SystemEvent(
+                            event_type=event_type,
+                            severity=severity,
+                            title=title,
+                            body=_job_final_body(
+                                job_id, JobStatus.CANCELLED, job.invited, job.skipped, job.failed, None
+                            ),
+                            data={"job_id": job_id, "status": "cancelled"},
+                        )
+                    )
+                except Exception:  # pragma: no cover - publish never raises
+                    pass
                 return True
             # Lost a race (the job just started running or was finalized);
             # fall through and re-read below.
@@ -242,6 +297,16 @@ class JobManager:
 
     async def list_jobs(self, owner_id: int, limit: int = 10) -> list[Job]:
         return await repo.list_jobs(self._db, owner_id, limit=limit)
+
+    async def _maybe_publish_system_event(self, event: SystemEvent) -> None:
+        """Best-effort system-event publish from the job runner; logged only."""
+        try:
+            await self._bus.publish(event)
+        except Exception:  # pragma: no cover - publish never raises
+            logger.warning(
+                "job runner: system event publish failed (%s)",
+                event.event_type, exc_info=True,
+            )
 
     async def shutdown(self) -> None:
         """Cancel every live job task (backstop path) and await them; the
@@ -273,6 +338,17 @@ class JobManager:
                     started=True,
                 ):
                     return  # cancelled while queued; cancel_job published the event
+                try:
+                    await self._bus.publish(
+                        SystemEvent(
+                            event_type="job_started",
+                            severity="info",
+                            title="▶|بدأت عملية نقل",
+                            body=f"⟡|العملية <code>#{job_id}</code> بدأت التنفيذ.",
+                        )
+                    )
+                except Exception:  # pragma: no cover - publish never raises
+                    pass
                 async with self._account_lock:
                     if account_id in self._active_accounts:  # pragma: no cover
                         finalized = await self._finalize(
@@ -393,6 +469,15 @@ class JobManager:
                     self._db, "account_limited", account_id=account_id,
                     detail={"reason": "peer_flood", "until": until},
                 )
+                await self._maybe_publish_system_event(
+                    SystemEvent(
+                        event_type="peer_flood",
+                        severity="error",
+                        title="⛔|تم حظر دعوة الحساب",
+                        body=f"⟡|الحساب <code>#{account_id}</code> محظور مؤقتاً حتى {until}.",
+                        data={"account_id": account_id, "until": until},
+                    )
+                )
                 logger.warning("account %d limited until %s (PeerFlood)", account_id, until)
             elif kind is ErrorKind.AUTH_REVOKED:
                 await repo.set_account_status(
@@ -403,7 +488,15 @@ class JobManager:
                     self._db, "account_unauthorized", account_id=account_id,
                     detail={"reason": "auth_revoked"},
                 )
-                logger.warning("account %d marked unauthorized (revoked session)", account_id)
+                await self._maybe_publish_system_event(
+                    SystemEvent(
+                        event_type="account_unauthorized",
+                        severity="error",
+                        title="🔐|الجلسة غير صالحة",
+                        body=f"⟡|الحساب <code>#{account_id}</code> يتطلب إعادة تسجيل الدخول.",
+                        data={"account_id": account_id, "reason": "auth_revoked"},
+                    )
+                )
         except Exception:
             logger.warning(
                 "job %d: failed to mark account %d fatal", job_id, account_id,
@@ -459,8 +552,23 @@ class JobManager:
                     error=error,
                 )
             )
-        except Exception:  # pragma: no cover - defensive
+        except Exception:  # pragma: no cover - publish never raises
             logger.warning("job %d: finished event publish failed", job_id, exc_info=True)
+        try:
+            event_type, severity, title = _job_final_event(status, job_id, invited, skipped, failed, error)
+            await self._bus.publish(
+                SystemEvent(
+                    event_type=event_type,
+                    severity=severity,
+                    title=title,
+                    body=_job_final_body(job_id, status, invited, skipped, failed, error),
+                    data={"job_id": job_id, "status": status.value, "invited": invited or 0,
+                          "skipped": skipped or 0, "failed": failed or 0,
+                          "error": error or ""},
+                )
+            )
+        except Exception:  # pragma: no cover - publish never raises
+            logger.warning("job %d: system event publish failed", job_id, exc_info=True)
         await repo.audit(
             self._db,
             "job_finished",

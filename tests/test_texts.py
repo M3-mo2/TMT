@@ -297,3 +297,70 @@ def test_gate_callback_data_round_trips() -> None:
     from app.bot.callbacks import GateCB
     packed = GateCB(action="verify").pack()
     assert packed == "gate:verify"
+
+
+# ---------------------------------------------------------------- notifications
+
+
+def test_notification_event_label_arabic() -> None:
+    assert texts.notification_event_label("user_joined") == "مستخدم جديد"
+    assert texts.notification_event_label("job_failed") == "فشلت عملية نقل"
+    assert texts.notification_event_label("broadcast_completed") == "اكتمل البث"
+    assert texts.notification_event_label("unknown_type") == "unknown_type"
+
+
+def test_notification_severity_label_arabic() -> None:
+    assert texts.notification_severity_label("info") == "معلومات"
+    assert texts.notification_severity_label("warning") == "تحذير"
+    assert texts.notification_severity_label("error") == "خطأ"
+
+
+def test_render_notifications_list_empty() -> None:
+    rendered = texts.render_notifications_list([], 0)
+    assert texts.M_NOTIFY_TITLE in rendered
+    assert texts.M_NOTIFY_EMPTY in rendered
+
+
+def test_render_notifications_list_with_items() -> None:
+    notifs = [
+        {"id": 1, "title": "joined", "event_type": "user_joined",
+         "severity": "info", "body": "user 42", "read_at": None,
+         "created_at": "2026-01-01T00:00:00Z"},
+        {"id": 2, "title": "failed", "event_type": "job_failed",
+         "severity": "error", "body": "boom", "read_at": "2026-01-01T01:00:00Z",
+         "created_at": "2026-01-01T00:00:00Z"},
+    ]
+    rendered = texts.render_notifications_list(notifs, 2)
+    assert texts.M_NOTIFY_TITLE in rendered
+    assert "lDadY" not in rendered  # ensure no raw encoding artifact
+    assert "joined" in rendered
+    assert "failed" in rendered
+    # Unread count badge
+    assert "<code>2</code>" in rendered
+
+
+def test_render_notification_card() -> None:
+    notif = {
+        "id": 1, "title": "test title", "event_type": "user_joined",
+        "severity": "info", "body": "user details",
+        "created_at": "2026-01-01T00:00:00Z", "read_at": None,
+        "dismissed": 0,
+    }
+    card = texts.render_notification_card(notif)
+    assert "test title" in card
+    assert "مستخدم جديد" in card  # event label
+    assert "user details" in card
+
+
+def test_render_notify_settings_shows_all_types() -> None:
+    admin_ids = [12345, 67890]
+    enabled = ["user_joined", "job_failed", "job_completed"]
+    rendered = texts.render_notify_settings(admin_ids, enabled)
+    assert texts.M_NOTIFY_SETTINGS_TITLE in rendered
+    assert "<code>2</code>" in rendered  # two admins
+    # Each event type should appear
+    assert "user_joined" in rendered
+    assert "job_failed" in rendered
+    assert "job_completed" in rendered
+    # Enabled ones marked ✓, disabled marked ×
+    assert "✓" in rendered

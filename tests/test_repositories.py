@@ -58,8 +58,10 @@ async def force_status(db: Database, job_id: int, status: JobStatus) -> None:
 
 
 async def test_upsert_user_is_idempotent(db: Database) -> None:
-    await repo.upsert_user(db, 42)
-    await repo.upsert_user(db, 42)
+    is_new = await repo.upsert_user(db, 42)
+    assert is_new is True
+    is_new_again = await repo.upsert_user(db, 42)
+    assert is_new_again is False
     rows = await db.fetch_all("SELECT id FROM users WHERE id=42")
     assert [r["id"] for r in rows] == [42]
 

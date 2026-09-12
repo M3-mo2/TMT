@@ -5,6 +5,11 @@ Runs on every Update before any handler. Injects ``db`` into the handler data.
 Non-private chats get an answer only for ``/start``; everything else in groups
 is ignored. Callback data is user-controlled input, never authorization
 (RULES §4) — handlers re-verify ownership via the services.
+
+When ``bus`` is provided, the middleware publishes a
+:class:`~app.core.events.SystemEvent` of type ``user_joined`` whenever a user
+who was not previously in the database sends their first update (see
+docs/notifications/NotificationSystem.md §4.1).
 """
 
 from __future__ import annotations
@@ -23,8 +28,10 @@ from app.bot.texts import (
     M_GATE_PLEASE_VERIFY,
     M_PRIVATE_ONLY,
     PARSE_MODE,
+    esc,
     render_gate_screen,
 )
+from app.core.events import SystemEvent
 from app.db import repositories as repo
 from app.db.database import Database
 
@@ -34,8 +41,9 @@ __all__ = ["UserGateMiddleware"]
 
 
 class UserGateMiddleware(BaseMiddleware):
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, bus: Any | None = None) -> None:
         self._db = db
+        self._bus = bus
         self._gate_shown: set[int] = set()
 
     async def __call__(
@@ -49,13 +57,23 @@ class UserGateMiddleware(BaseMiddleware):
         if user is None:
             return None  # channel posts / anonymous events: no user to gate
 
-        await repo.upsert_user(
+        is_new = await repo.upsert_user(
             self._db,
             user.id,
             first_name=user.first_name,
             last_name=user.last_name,
             username=user.username,
         )
+        if is_new and self._bus is not None:
+            await self._bus.publish(
+                SystemEvent(
+                    event_type="user_joined",
+                    severity="info",
+                    title="👤|مستخدم جديد",
+                    body=self._render_join_body(user),
+                    data={"user_id": user.id, "username": user.username or ""},
+                )
+            )
         if await repo.is_user_blocked(self._db, user.id):
             await self._refuse(inner)
             return None
@@ -91,6 +109,22 @@ class UserGateMiddleware(BaseMiddleware):
 
         data["db"] = self._db
         return await handler(event, data)
+
+    @staticmethod
+    def _render_join_body(user: Any) -> str:
+        """Render the Arabic body text for a ``user_joined`` system event.
+
+        User-controlled values (name, username) are escaped via ``texts.esc``
+        before interpolation (RULES §7 — no raw user input in messages)."""
+        display = user.full_name if hasattr(user, "full_name") and user.full_name \
+            else " ".join(p for p in (user.first_name, getattr(user, "last_name", None)) if p)
+        if not display:
+            display = "مستخدم"
+        parts = [f"👤|الاسم ↼ <b>{esc(display)}</b>"]
+        if user.username:
+            parts.append(f"›|اسم المستخدم ↼ <code>@{esc(user.username)}</code>")
+        parts.append(f"›|المعرف ↼ <code>{user.id}</code>")
+        return "\n".join(parts)
 
     async def _show_gate(
         self,

@@ -15,7 +15,7 @@ from app.db.migrations import _V1, _split_statements
 
 async def test_connect_applies_migrations(db: Database) -> None:
     rows = await db.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
-    assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     tables = {
         r["name"]
         for r in await db.fetch_all(
@@ -40,7 +40,7 @@ async def test_reconnect_is_idempotent(tmp_path: Path) -> None:
     await db2.connect()
     try:
         rows = await db2.fetch_all("SELECT version FROM schema_migrations")
-        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     finally:
         await db2.close()
 
@@ -154,7 +154,7 @@ async def test_v1_database_upgrades_to_v2_preserving_history(tmp_path: Path) -> 
     await db.connect()
     try:
         rows = await db.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
-        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         job = await db.fetch_one(
             "SELECT account_id, status, invited FROM jobs WHERE id=9"
         )
@@ -226,3 +226,59 @@ async def test_list_channels_by_type_and_count(db: Database) -> None:
     # toggle a channel inactive — count should drop
     await repo.toggle_channel(db, channels[0]["id"])
     assert await repo.count_channels_by_type(db, "channel") == 1
+
+
+# ---------------------------------------------------------------- v10: notifications
+
+
+async def test_migration_v10_creates_notifications_tables(db: Database) -> None:
+    tables = {
+        r["name"]
+        for r in await db.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    assert "notifications" in tables
+    assert "notification_settings" in tables
+    cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(notifications)")}
+    assert {"id", "owner_id", "event_type", "severity", "title", "body",
+            "data", "created_at", "delivered", "read_at", "dismissed"} <= cols
+    cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(notification_settings)")}
+    assert {"owner_id", "event_type", "enabled"} <= cols
+
+
+async def test_migration_v10_has_notification_indexes(db: Database) -> None:
+    indexes = {
+        r["name"]
+        for r in await db.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        )
+    }
+    assert "idx_notifications_owner" in indexes
+
+
+async def test_migration_v10_owner_id_no_fk(db: Database) -> None:
+    """owner_id is a plain INTEGER — notifications for admins not yet in users."""
+    await db.execute(
+        "INSERT INTO notifications (owner_id, event_type, title, body, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (999999, "user_joined", "t", "b", "t"),
+    )
+    row = await db.fetch_one("SELECT owner_id FROM notifications WHERE owner_id=?", (999999,))
+    assert row is not None and row["owner_id"] == 999999
+
+
+async def test_migration_v10_defaults(db: Database) -> None:
+    """New notification rows get sensible defaults."""
+    await db.execute(
+        "INSERT INTO notifications (owner_id, event_type, title, body, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (1, "user_joined", "t", "b", "t"),
+    )
+    row = await db.fetch_one("SELECT * FROM notifications WHERE owner_id=?", (1,))
+    assert row is not None
+    assert row["severity"] == "info"
+    assert row["delivered"] == 0
+    assert row["dismissed"] == 0
+    assert row["read_at"] is None
+    assert row["data"] == "{}"

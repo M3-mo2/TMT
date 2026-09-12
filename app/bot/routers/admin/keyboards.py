@@ -24,6 +24,9 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
                 _btn("📢 البث", C.BCAST),
             ],
             [
+                _btn("🔔 الإشعارات", C.NOTIFY),
+            ],
+            [
                 _btn("⚙️ الإعدادات", C.SETTINGS),
             ],
         ]
@@ -212,3 +215,50 @@ def settings_kb() -> InlineKeyboardMarkup:
             [_btn("› رجوع", C.MENU)],
         ]
     )
+
+
+def notifications_list_kb(
+    notifications: list[dict],
+    page: int,
+    admin_id: int,
+) -> InlineKeyboardMarkup:
+    """Keyboard for the notification inbox: per-row read/dismiss + pagination.
+
+    Each notification row gets two small buttons (✓ read / × dismiss).  If the
+    number of returned rows equals the page size, a 'Next' button appears; if
+    ``page > 0`` a 'Previous' button appears."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for n in notifications:
+        notif_id = n["id"]
+        rows.append([
+            _btn("✓", f"{C.NOTIFY_READ}{notif_id}"),
+            _btn("×", f"{C.NOTIFY_DISMISS}{notif_id}"),
+        ])
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(_btn("← السابق", f"{C.NOTIFY_PAGE}{page - 1}"))
+    if len(notifications) >= 10:
+        nav.append(_btn("التالي →", f"{C.NOTIFY_PAGE}{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([
+        _btn("✓ All Read", C.NOTIFY_MARK_ALL),
+        _btn("⚙️ الإعدادات", f"{C.NOTIFY}:settings"),
+    ])
+    rows.append([_btn("› رجوع", C.MENU)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def notify_settings_kb(admin_id: int) -> InlineKeyboardMarkup:
+    """Keyboard for the notification settings screen: toggle buttons for each
+    event type, plus a 'mark all read' helper and back to menu."""
+    from app.core.events import SYSTEM_EVENTS
+    from app.bot.texts import notification_event_label
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for et in sorted(SYSTEM_EVENTS):
+        label = notification_event_label(et)
+        rows.append([_btn(label, f"{C.NOTIFY_TOGGLE}{et}")])
+    rows.append([_btn("✓ All Read", C.NOTIFY_MARK_ALL)])
+    rows.append([_btn("› رجوع", C.MENU)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)

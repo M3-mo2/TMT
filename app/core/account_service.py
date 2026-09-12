@@ -7,8 +7,10 @@ are Arabic and user-facing (RULES §7) — technical detail goes to logs only.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
+from app.core.events import EventBus, SystemEvent
 from app.core.models import Account, AccountStatus
 from app.db import repositories as repo
 from app.db.database import Database
@@ -38,10 +40,11 @@ class ServiceError(Exception):
 
 
 class AccountService:
-    def __init__(self, db: Database, crypto: SessionCrypto, pool: ClientPool) -> None:
+    def __init__(self, db: Database, crypto: SessionCrypto, pool: ClientPool, bus: EventBus | None = None) -> None:
         self._db = db
         self._crypto = crypto
         self._pool = pool
+        self._bus = bus
 
     async def save_login(self, owner_id: int, phone: str, result: LoginResult) -> Account:
         """Persist a successful login: encrypt the session string, upsert the
@@ -63,6 +66,16 @@ class AccountService:
         await self._pool.discard(account_id)
         await repo.audit(
             self._db, "account_added", owner_id=owner_id, account_id=account_id
+        )
+        await self._publish(
+            SystemEvent(
+                event_type="account_added",
+                severity="info",
+                title="🔐|تم إضافة حساب جديد",
+                body=f"⟡|المستخدم <code>{owner_id}</code> أضاف حساب تيليجرام (#{account_id}).",
+                data={"owner_id": owner_id, "account_id": account_id,
+                      "tg_user_id": result.tg_user_id},
+            )
         )
         record = await repo.get_account(self._db, owner_id, account_id)
         assert record is not None  # upsert just wrote it
@@ -100,6 +113,15 @@ class AccountService:
             raise ServiceError(MSG_ACCOUNT_BUSY)
         await self._pool.discard(account_id)
         await repo.delete_account_with_audit(self._db, owner_id, account_id)
+        await self._publish(
+            SystemEvent(
+                event_type="account_removed",
+                severity="info",
+                title="🗑️|تم حذف حساب",
+                body=f"⟡|المستخدم <code>{owner_id}</code> حذف الحساب (#{account_id}).",
+                data={"owner_id": owner_id, "account_id": account_id},
+            )
+        )
 
     async def mark_status(
         self,
@@ -118,3 +140,12 @@ class AccountService:
         if record is None:
             raise ServiceError(MSG_ACCOUNT_NOT_FOUND)
         return record
+
+    async def _publish(self, event: SystemEvent) -> None:
+        """Best-effort publish to the bus; logged, never raises."""
+        if self._bus is None:
+            return
+        try:
+            await self._bus.publish(event)
+        except Exception:
+            logger.warning("system event publish failed (%s)", event.event_type, exc_info=True)
