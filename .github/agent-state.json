@@ -2,22 +2,33 @@
   "task": "Review the new notification system, discover its problems, and fix them.",
   "max_cycles": 15,
   "cycle": 0,
-  "status": "building",
+  "status": "issues_found",
   "findings": [
     {
       "title": "Docs over-claim broadcast_failed 'error for hard failures'",
       "severity": "low",
       "file": "docs/notifications/NotificationSystem.md",
-      "detail": "§3.1 severity note states broadcast_failed from _run_campaign finalization uses 'error' severity for hard failures, but finalization only publishes broadcast_failed (warning) for cancellations and broadcast_completed (info) otherwise. A campaign only reaches FAILED status via recover(), which emits no system event, so the 'error for hard failures' path is unimplemented."
+      "detail": "§3.1 severity note (lines 126-128) states broadcast_failed from _run_campaign finalization uses 'error' severity for hard failures, but finalization (broadcast.py:671-709) only publishes broadcast_failed (warning) for cancellations and broadcast_completed (info) otherwise. recover() marks campaigns FAILED (broadcast.py:433-438) but emits no system event, so the 'error for hard failures' path does not exist in code."
     },
     {
       "title": "Broadcaster.cancel() retains unused bot parameter",
       "severity": "low",
       "file": "app/core/broadcast.py",
-      "detail": "After the duplicate system-event publish was removed, bot is no longer referenced in cancel(). All four call sites still pass bot. Low-priority cleanup; harmless if left for API stability."
+      "detail": "After the duplicate system-event publish was removed from cancel() (now just a comment at line 315-317), bot is no longer referenced in the method body (line 292). All four call sites (admin/broadcast.py:546, test_broadcaster.py:389/531, test_bcast_scheduling.py:242) still pass bot unnecessarily. Low-priority cleanup; harmless if left for API stability."
+    },
+    {
+      "title": "Missing per-admin error isolation in NotificationService._on_system_event",
+      "severity": "low",
+      "file": "app/core/notifications.py",
+      "detail": "The per-admin loop (lines 89-105) calls repo.is_notification_enabled and repo.create_notification without a per-admin try/except. If either raises for one admin (e.g. transient DB error), the loop aborts and all subsequent admins are silently skipped (no row, no DM). _try_dm has its own try/except (line 109+), but DB-operation failures propagate to EventBus.publish which logs and stops the handler. Docs §3.5.2 claim 'a DM failure for one admin does not prevent delivery to others' but do not cover DB-operation failures that can silently drop remaining admins."
     }
   ],
   "history": [
+    {
+      "agent": "review",
+      "cycle": 0,
+      "result": "issues_found"
+    },
     {
       "agent": "review",
       "cycle": 0,
