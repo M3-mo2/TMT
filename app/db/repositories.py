@@ -1029,7 +1029,7 @@ async def insert_backup(
 async def update_backup_status(
     db: Database, backup_id: int, status: BackupStatus, *,
     file_size: int | None = None, sent_to: int | None = None,
-    error: str | None = None,
+    error: str | None = None, filename: str | None = None,
 ) -> bool:
     """Update a backup's terminal fields. Returns True if a row changed.
 
@@ -1046,6 +1046,9 @@ async def update_backup_status(
     if error is not None:
         sets.append("error=?")
         params.append(error)
+    if filename is not None:
+        sets.append("filename=?")
+        params.append(filename)
     params.append(backup_id)
     params.extend(
         {BackupStatus.PENDING.value, BackupStatus.RUNNING.value}

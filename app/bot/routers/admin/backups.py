@@ -41,6 +41,7 @@ from app.bot.texts import (
     M_BACKUP_RESTORE_BLOCKED,
     M_BACKUP_RESTORE_DONE,
     M_BACKUP_RESTORE_FAILED,
+    M_BACKUP_SENT,
     M_BACKUPS_SUMMARY,
     M_BACKUPS_TITLE,
     PARSE_MODE,
@@ -89,10 +90,6 @@ def _back_kb(data: str = C.BAK) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[_btn("› رجوع", data)]])
 
 
-def _interval_back_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[_btn("› رجوع", C.BAK_SETTINGS)]])
-
-
 async def _settings_view(backup: BackupService) -> tuple[BackupSettings, str]:
     settings = await backup.get_settings()
     last = await backup.last_backup_created_at()
@@ -135,9 +132,10 @@ async def cb_backup_toggle(cb: CallbackQuery, backup: BackupService) -> None:
     await cb.answer()
     settings = await backup.get_settings()
     await backup.set_setting(repo.BACKUP_KEY_ENABLED, "false" if settings.enabled else "true")
+    _, text = await _settings_view(backup)
     await safe_edit(
         cb,
-        await _render_settings(cb, backup),
+        text,
         reply_markup=backup_settings_kb(not settings.enabled),
     )
 
@@ -150,7 +148,7 @@ async def cb_backup_interval(cb: CallbackQuery, state: FSMContext, backup: Backu
     await safe_edit(
         cb,
         M_BACKUP_INTERVAL_PROMPT.format(current=settings.interval_hours),
-        reply_markup=_interval_back_kb(),
+        reply_markup=backup_interval_back_kb(),
     )
 
 
@@ -216,7 +214,7 @@ async def cb_backup_open(cb: CallbackQuery, backup: BackupService) -> None:
     if bid is None:
         await safe_edit(cb, "× غير موجود.", reply_markup=_back_kb())
         return
-    rec = await repo.get_backup(backup._db, bid)
+    rec = await backup.get_backup(bid)
     if rec is None:
         await safe_edit(cb, "× غير موجود.", reply_markup=_back_kb())
         return
@@ -261,7 +259,7 @@ async def cb_backup_delete_confirm(cb: CallbackQuery, backup: BackupService) -> 
     if bid is None:
         await safe_edit(cb, "× غير موجود.", reply_markup=_back_kb(C.BAK))
         return
-    rec = await repo.get_backup(backup._db, bid)
+    rec = await backup.get_backup(bid)
     if rec is None:
         await safe_edit(cb, "× غير موجود.", reply_markup=_back_kb(C.BAK))
         return
@@ -297,7 +295,7 @@ async def cb_backup_restore_prompt(cb: CallbackQuery, backup: BackupService) -> 
     if bid is None:
         await safe_edit(cb, "× غير موجود.", reply_markup=_back_kb(C.BAK))
         return
-    rec = await repo.get_backup(backup._db, bid)
+    rec = await backup.get_backup(bid)
     if rec is None:
         await safe_edit(cb, "× غير موجود.", reply_markup=_back_kb(C.BAK))
         return
@@ -355,7 +353,7 @@ async def cb_backup_upload_start(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
     await state.set_state(BackupFSM.archive)
     await safe_edit(cb, M_BACKUPS_TITLE + "\n\n↢ أرسل ملف الأرشيف المضغوط (.zip) لاستعادته.",
-                    reply_markup=_interval_back_kb())
+                    reply_markup=backup_interval_back_kb())
 
 
 @router.message(StateFilter(BackupFSM.archive))

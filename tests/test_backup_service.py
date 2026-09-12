@@ -53,6 +53,9 @@ async def svc(tmp_path: Path) -> tuple[BackupService, Database, Config]:
         tg_username="u", display_name="Acct",
         session_encrypted=crypto.encrypt("session-string"),
     )
+    # Flush the WAL into the main db file so test helpers that copy the file
+    # (e.g. _archive_bytes) capture a complete, self-contained snapshot.
+    await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     service = BackupService(db, config)
     yield service, db, config
@@ -136,7 +139,7 @@ async def test_create_backup_missing_db_file(tmp_path: Path) -> None:
     db = Database(tmp_path / "missing" / "bot.db")
     config = _config(tmp_path, data_dir=tmp_path / "missing")
     service = BackupService(db, config)
-    await service._dir.mkdir(parents=True, exist_ok=True)
+    service._dir.mkdir(parents=True, exist_ok=True)
     # db file does not exist yet -> snapshot must fail fast
     with pytest.raises(SnapshotError):
         await service._make_archive()
@@ -194,8 +197,7 @@ async def test_sweeper_creates_backup_when_due(svc: tuple) -> None:
     try:
         await repo.set_setting(db, repo.BACKUP_KEY_ENABLED, "true")
         await repo.set_setting(db, repo.BACKUP_KEY_INTERVAL, "0")  # any past interval triggers
-        # force 'last backup' far in the past
-        await db.fetch_one  # no-op
+        # No prior backup exists -> `_is_due` treats the last-ts as far in the past.
         # _tick runs a full due-check; with interval 0 and no last backup -> due
         await service._tick()
         assert await repo.count_backups(db) == 1

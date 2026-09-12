@@ -268,7 +268,7 @@ class BackupService:
             )
             try:
                 archive_path = await self._make_archive()
-            except SnapshotError as exc:
+            except (SnapshotError, OSError) as exc:
                 logger.exception("backup snapshot failed")
                 await repo.update_backup_status(
                     self._db, bid, BackupStatus.FAILED, error=str(exc)
@@ -276,9 +276,6 @@ class BackupService:
                 return BackupResult(ok=False, backup_id=bid, error=str(exc))
 
             size = archive_path.stat().st_size
-            await repo.update_backup_status(
-                self._db, bid, BackupStatus.OK, file_size=size
-            )
 
             sent_to: int | None = None
             if send and self._bot is not None:
@@ -287,12 +284,20 @@ class BackupService:
                     sent = await self._send_archive(settings.chat_id, archive_path)
                     if sent:
                         sent_to = settings.chat_id
-                        await repo.update_backup_status(
-                            self._db, bid, BackupStatus.SENT, sent_to=sent_to
-                        )
                     else:
-                        # Keep OK; send failure is logged but doesn't fail the backup.
+                        # Archive is still valid; a DM failure doesn't fail the backup.
                         logger.warning("backup DM failed for backup_id=%s chat=%s", bid, settings.chat_id)
+
+            # Single RUNNING -> final transition. update_backup_status only writes
+            # pending/running rows (final states are write-once, per RULES §5), so
+            # the filename + size + sent_to must be folded into one write rather
+            # than split into an OK-then-SENT pair (the SENT step would be a no-op
+            # once the row is already 'ok').
+            final_status = BackupStatus.SENT if sent_to is not None else BackupStatus.OK
+            await repo.update_backup_status(
+                self._db, bid, final_status,
+                file_size=size, filename=archive_path.name, sent_to=sent_to,
+            )
 
             await self._prune_retention()
             return BackupResult(ok=True, backup_id=bid, file_size=size)
@@ -305,6 +310,9 @@ class BackupService:
         is untouched.
         """
         ts = _now_iso().replace(":", "").replace("-", "")
+        # Microsecond precision avoids filename collisions when several backups
+        # are produced within the same second (on-demand double-clicks, etc.).
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
         archive_name = f"backup-{ts}.zip"
         archive_path = self._dir / archive_name
 
@@ -312,6 +320,9 @@ class BackupService:
         key_path = self.key_path
         if not db_path.exists():
             raise SnapshotError(f"database file not found: {db_path}")
+        # On-demand backups (run_now) may run before start_sweeper() created the
+        # directory, so ensure it exists here rather than only in the sweeper.
+        self._dir.mkdir(parents=True, exist_ok=True)
 
         def _work() -> None:
             # Dedicated read-only connection — sees committed WAL data, never
@@ -406,10 +417,11 @@ class BackupService:
                 tmpdir.mkdir(parents=True, exist_ok=True)
                 db_tmp = tmpdir / self.DB_MEMBER
                 zf.extract(self.DB_MEMBER, tmpdir)
-                # SQLite header magic.
+                # SQLite header magic: the literal is 16 bytes ("SQLite format 3"
+                # = 15 chars + NUL), so compare a full 16-byte slice.
                 with open(db_tmp, "rb") as fh:
                     header = fh.read(16)
-                if header[:15] != b"SQLite format 3\x00":
+                if header[:16] != b"SQLite format 3\x00":
                     return None
                 # Quick schema sanity: must own a migrations table.
                 probe = sqlite3.connect(f"file:{db_tmp}?mode=ro", uri=True, timeout=10)
@@ -458,6 +470,8 @@ class BackupService:
 
     async def _swap(self, extracted: tuple[Path, Path | None]) -> RestoreResult:
         db_src, key_src = extracted
+        # Capture audit-relevant facts before the finally block rmtrees staging.
+        db_size = db_src.stat().st_size
         db_safety, key_safety = await asyncio.to_thread(self._safety_backup)
         ok = True
         error: str | None = None
@@ -495,12 +509,16 @@ class BackupService:
             )
         await repo.audit(
             self._db, "backup_restored",
-            detail={"file_size": db_src.stat().st_size},
+            detail={"file_size": db_size},
         )
         logger.info("restore complete from %s", db_src.name)
         return RestoreResult(ok=True, detail="تمت استعادة النسخة الاحتياطية بنجاح.")
 
     # ------------------------------------------------------------------ export/delete
+
+    async def get_backup(self, backup_id: int) -> BackupRecord | None:
+        """Fetch a single backup record via the service boundary (no repo leakage)."""
+        return await repo.get_backup(self._db, backup_id)
 
     async def archive_path_for(self, backup_id: int) -> Path | None:
         rec = await repo.get_backup(self._db, backup_id)
