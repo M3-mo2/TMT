@@ -1,7 +1,7 @@
 {
   "task": "Review the new notification system, discover its problems, and fix them.",
   "max_cycles": 15,
-  "cycle": 0,
+  "cycle": 1,
   "status": "issues_found",
   "findings": [
     {
