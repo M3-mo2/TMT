@@ -3,6 +3,10 @@
     {
       "pr": 12,
       "note": "auto-tracked new build"
+    },
+    {
+      "pr": 13,
+      "note": "fresh admin-panel-only build result (Build done, agent:review)"
     }
   ]
 }
