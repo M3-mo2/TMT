@@ -5,8 +5,13 @@
 # FLOW:
 #   workflow_dispatch (you type a feature request)
 #        │
-#        ▼
-#   [BUILD]  → creates branch + PR, implements the feature, labels PR "agent:review"
+#        ├─── "target" input EMPTY ──▶ [BUILD] → creates branch + PR, implements the
+#        │                              feature, labels PR "agent:review"
+#        │
+#        └─── "target" input SET (PR #, branch name, or its tree URL) ──▶
+#              [RESUME REVIEW] → skips branch/PR creation, resets the cycle counter
+#              on that EXISTING PR, records your "prompt" text as the new
+#              instruction, and jumps straight to "agent:review"
 #        │
 #        ▼
 #   [REVIEW] ⇄ [FIX]   (loops until clean, or until the safety ceiling is hit)
@@ -94,6 +99,11 @@ on:
         required: false
         default: "ninerouter/kc/poolside/laguna-s-2.1:free"
         type: string
+      target:
+        description: "PR number, branch name, or its GitHub tree URL to RE-review (leave EMPTY to build a brand-new feature instead)"
+        required: false
+        default: ""
+        type: string
   pull_request:
     types: [labeled]
   issue_comment:
@@ -118,7 +128,7 @@ jobs:
   # ============================================================================
   build:
     name: 🏗️ Build Agent
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.target == ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -205,6 +215,129 @@ jobs:
               "agent:blocked"). Routing beyond this first handoff is handled by the workflow itself.
             - Do NOT merge anything.
             - Never fake a passing test or a successful build.
+
+  # ============================================================================
+  # STAGE 0b — RESUME REVIEW (re-review/re-fix an EXISTING branch or PR)
+  # ============================================================================
+  # Triggered instead of [BUILD] when workflow_dispatch is run with "target" filled
+  # in (a PR number, a branch name like agent/feature-34656420282, or its GitHub
+  # tree URL). Skips branch/PR creation entirely and just resets that PR back into
+  # the normal Review → Fix → Verify → Decision loop with a fresh cycle counter.
+  resume_review:
+    name: 🔁 Resume Review Agent
+    if: github.event_name == 'workflow_dispatch' && inputs.target != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: ⚙️ Configure Git
+        run: |
+          git config --global user.name "${{ env.BOT_NAME }}"
+          git config --global user.email "findlapmn@gmail.com"
+
+      - name: 🔎 Resolve target into a PR number
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          # Accepts a plain PR number ("34"), a branch name
+          # ("agent/feature-34656420282"), or a full .../tree/<branch> URL.
+          BRANCH="${TARGET##*/tree/}"
+
+          if [[ "$BRANCH" =~ ^[0-9]+$ ]]; then
+            PR="$BRANCH"
+          else
+            PR=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --state all --json number --jq '.[0].number // empty')
+          fi
+
+          if [ -z "$PR" ]; then
+            echo "❌ Could not find any PR for target '$TARGET' (resolved branch: '$BRANCH')." >&2
+            echo "Pass a PR number, a branch name, or its GitHub tree URL in the 'target' input." >&2
+            exit 1
+          fi
+
+          PR_STATE=$(gh pr view "$PR" --repo "${{ github.repository }}" --json state --jq .state)
+          if [ "$PR_STATE" = "MERGED" ]; then
+            echo "❌ PR #$PR is already merged — its branch was deleted when it merged, so there's nothing left to resume." >&2
+            echo "Start a fresh workflow_dispatch run with an empty 'target' instead." >&2
+            exit 1
+          fi
+
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+
+      - name: 🔀 Checkout that PR's branch
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: gh pr checkout ${{ steps.resolve.outputs.pr }} --repo "${{ github.repository }}"
+
+      - name: 📝 Reset pipeline state for a fresh review round
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          TASK_PROMPT: ${{ inputs.prompt }}
+          MAX_CYCLES: ${{ inputs.max_cycles }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          BRANCH=$(git branch --show-current)
+          mkdir -p "$(dirname "$STATE_FILE")"
+
+          write_state() {
+            if [ -f "$STATE_FILE" ]; then
+              # Already pipeline-managed: keep history, restart the cycle counter,
+              # and record the new instruction so Review/Fix can see exactly what
+              # was asked for this round.
+              jq --arg author "$ACTOR" --arg body "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" \
+                '.cycle = 0
+                 | .max_cycles = $maxc
+                 | .status = "building"
+                 | .human_messages = ((.human_messages // []) + [{"author":$author,"body":$body,"delivered":false}])' \
+                "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
+            else
+              # Ad-hoc branch/PR the pipeline never touched before: initialize fresh.
+              jq -n --arg task "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" \
+                '{task:$task, max_cycles:$maxc, cycle:0, status:"building", findings:[], history:[], human_messages:[]}' \
+                > "$STATE_FILE"
+            fi
+          }
+
+          write_state
+          git add "$STATE_FILE"
+          git commit -m "chore(pipeline): resume review at request of $ACTOR" --allow-empty
+
+          for ATTEMPT in 1 2 3 4 5; do
+            if git push origin "$BRANCH"; then
+              break
+            fi
+            echo "⚠️ Push rejected (attempt $ATTEMPT/5) — refetching and retrying..."
+            git reset --soft HEAD~1
+            git fetch origin "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+            write_state
+            git add "$STATE_FILE"
+            git commit -m "chore(pipeline): resume review at request of $ACTOR" --allow-empty
+            sleep $((RANDOM % 3 + 1))
+            if [ "$ATTEMPT" -eq 5 ]; then
+              echo "❌ Failed to push the resumed state after 5 attempts." >&2
+              exit 1
+            fi
+          done
+
+      - name: 🏷️ Reset labels and hand off to Review Agent
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          PR="${{ steps.resolve.outputs.pr }}"
+          for L in agent:fix agent:verify agent:decision agent:blocked agent:merged agent:closed-by-human; do
+            gh pr edit "$PR" --repo "${{ github.repository }}" --remove-label "$L" 2>/dev/null || true
+          done
+          gh pr edit "$PR" --repo "${{ github.repository }}" --add-label "agent:review"
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body "### 🔁 Resume requested by @${{ github.actor }}
+          > ${{ inputs.prompt }}
+
+          Restarting the Review → Fix → Verify → Decision loop on this PR (cycle counter reset)."
 
   # ============================================================================
   # STAGE 1 — REVIEW
