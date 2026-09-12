@@ -5,58 +5,57 @@
   "status": "issues_found",
   "findings": [
     {
-      "title": "Undefined `_render_settings` helper crashes the backup toggle",
-      "severity": "high",
-      "file": "app/bot/routers/admin/backups.py:140",
-      "detail": "`cb_backup_toggle` calls `await _render_settings(cb, backup)`, but no such function is defined in the module (only `_settings_view` exists, which returns a tuple). Toggling the periodic-backup switch therefore raises NameError at runtime. There are no router-level tests, so this ships unnoticed."
-    },
-    {
-      "title": "On-demand backup / `_make_archive` does not create the `backups/` directory",
-      "severity": "high",
-      "file": "app/core/backup.py:300",
-      "detail": "`_make_archive` writes the archive to `self._dir` (= data_dir/backups) but never creates that directory; only `start_sweeper()` does. On-demand backups (`run_now`) and upload-restore therefore fail with FileNotFoundError. Worse, create_backup only catches `SnapshotError`, so this FileNotFoundError propagates uncaught to the bot callback. Reproduced: 8 service tests fail with FileNotFoundError."
-    },
-    {
-      "title": "Backup record filename is never persisted",
-      "severity": "high",
-      "file": "app/core/backup.py:266-281",
-      "detail": "`insert_backup` is called with filename='' and `update_backup_status` never sets the filename, so every record.filename stays empty. This breaks: `archive_path_for` (export and restore-by-list always return None), `delete_backup` (it unlinks `self._dir / ''` i.e. the backups/ directory, not the .zip, orphaning the archive), and `_prune_retention` (kept_names never matches any real filename, so retention deletes ALL backup-*.zip files every run)."
-    },
-    {
-      "title": "SQLite header validation off-by-one rejects every valid restore",
-      "severity": "high",
-      "file": "app/core/backup.py:412",
-      "detail": "`if header[:15] != b'SQLite format 3\\x00'` compares a 15-byte slice to a 16-byte literal ('SQLite format 3' is 15 chars + NUL = 16 bytes). They can never compare equal, so `_extract_and_validate` always returns None and `restore_from_file` rejects every valid archive as 'invalid_archive', even one produced by the service itself. Verified byte lengths: literal=16, slice=15. Reproduced: test_extract_and_validate_ok fails."
-    },
-    {
-      "title": "Successful restore crashes at the post-success audit after staging dir is deleted",
+      "title": "HTML tag mismatch: <b> closed by </code> in restore confirmation prompt",
       "severity": "medium",
-      "file": "app/core/backup.py:483,498",
-      "detail": "On the success path, `_swap`'s `finally` runs `shutil.rmtree(db_src.parent)` (removing the `_stage/` dir containing db_src), then the success audit calls `db_src.stat().st_size` on the now-deleted file -> FileNotFoundError. Latent today (no test reaches the success audit because bugs #2/#3/#4 block it first), but it will surface once those are fixed."
+      "file": "app/bot/routers/admin/backups.py:304",
+      "detail": "cb_backup_restore_prompt opens <b> but closes </code> on the same line. With parse_mode=html (set by safe_edit), Telegram cannot match the bold closing tag, so the backup id renders un-bolded or the message may error. The sibling delete-confirm handler at line 268 correctly uses </b>. The router test test_cb_backup_restore_prompt_uses_service only asserts '#1' in text and never validates tag balance."
     },
     {
-      "title": "Two service tests await synchronous / non-callable objects",
-      "severity": "low",
-      "file": "tests/test_backup_service.py:139,198",
-      "detail": "`test_create_backup_missing_db_file` does `await service._dir.mkdir(...)` (Path.mkdir is synchronous, so awaiting None raises TypeError) and `test_sweeper_creates_backup_when_due` does `await db.fetch_one` (awaits the method object -> TypeError). Both abort before asserting their intent, so the missing-DB fast-fail and the due-check behavior are never actually validated."
-    },
-    {
-      "title": "No tests for the backup admin router handlers",
+      "title": "_safety_backup copies a WAL-mode DB without checkpointing",
       "severity": "medium",
-      "file": "tests/",
-      "detail": "All tests cover only the db/repo and service layers. The backups.py handlers (toggle, export, restore-from-list, upload-restore, delete) are entirely untested, which is exactly why the router-level defects (#1 toggle NameError; #3 restore/export/delete relying on an empty filename) shipped unnoticed."
+      "file": "app/core/backup.py:446-455",
+      "detail": "The Database runs in WAL mode (database.py:31 sets PRAGMA journal_mode=WAL). _safety_backup copies only bot.db via shutil.copy2 without checkpointing the WAL. Committed transactions residing only in the WAL are absent from the safety copy, so a rollback during a failed restore could write an incomplete DB. The module docstring (line 19) claims 'the live DB is checkpointed' but no checkpoint occurs in this path."
     },
     {
-      "title": "Router reaches into `backup._db`, bypassing the service abstraction",
+      "title": "Safety backup files (safety-*.db/safety-*.key) never cleaned up after restore",
       "severity": "low",
-      "file": "app/bot/routers/admin/backups.py:219,264,300",
-      "detail": "`cb_backup_open` / `cb_backup_delete_confirm` / `cb_backup_restore_prompt` call `repo.get_backup(backup._db, ...)` directly, leaking the service's private DB handle to the bot layer and violating RULES §1 (bot layer should not touch DB internals; use the service). A `BackupService.get_backup(id)` method would keep the boundary clean."
+      "file": "app/core/backup.py:446-455,494-499",
+      "detail": "_safety_backup writes safety-{stamp}.db and safety-{stamp}.key into backups/. The _swap finally block (line 496) only rmtrees the _stage/ directory; the safety files persist on every restore, leaking two files per run. Over time, repeated restores accumulate orphaned safety files."
+    },
+    {
+      "title": "Stale WAL/SHM files remain after _install overwrites bot.db",
+      "severity": "low",
+      "file": "app/core/backup.py:457-462",
+      "detail": "_install copies the backup bot.db over the live file but leaves the old -wal/-shm files. SQLite's WAL salt mismatch should cause it to ignore them, but this is not guaranteed across all SQLite versions and is fragile. Best practice is to explicitly remove them after replacing the DB file."
+    },
+    {
+      "title": "Export-failure handler shows 'Restore failed' message",
+      "severity": "low",
+      "file": "app/bot/routers/admin/backups.py:242",
+      "detail": "cb_backup_export renders M_BACKUP_RESTORE_FAILED.format(error='غير موجود') (text: 'فشلت الاستعادة' = 'Restore failed') when an export fails. There is no dedicated M_BACKUP_EXPORT_FAILED constant. The test test_cb_backup_export_failure_renders_error actively validates this wrong message."
+    },
+    {
+      "title": "Unused Database import in backups.py",
+      "severity": "low",
+      "file": "app/bot/routers/admin/backups.py:56",
+      "detail": "from app.db.database import Database is imported but never referenced (confirmed with pyflakes). The BackupService type is used as a handler parameter, but Database is not."
+    },
+    {
+      "title": "Dead code: ts assigned twice in _make_archive",
+      "severity": "low",
+      "file": "app/core/backup.py:312-315",
+      "detail": "Line 312 (ts = _now_iso().replace(...)) is immediately overwritten by line 315 (ts = datetime.now(...).strftime(...)). The first assignment is unreachable dead code left from the fix for finding #2."
     }
   ],
   "history": [
     {
       "agent": "review",
       "cycle": 0,
+      "result": "issues_found"
+    },
+    {
+      "agent": "review",
+      "cycle": 1,
       "result": "issues_found"
     }
   ],
