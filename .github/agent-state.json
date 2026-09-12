@@ -5,6 +5,7 @@
   "status": "clean",
   "findings": [],
   "history": [
-    {"agent": "review", "cycle": 0, "result": "clean"}
+    {"agent": "review", "cycle": 0, "result": "clean"},
+    {"agent": "verify", "cycle": 0, "result": "clean"}
   ]
 }
