@@ -97,7 +97,7 @@ def _job_final_event(
     if status is JobStatus.FAILED:
         return ("job_failed", "error", "×|فشلت عملية نقل")
     if status is JobStatus.CANCELLED:
-        return ("job_cancelled", "info", "↺|ألغيت عملية نقل")
+        return ("job_cancelled", "warning", "↺|ألغيت عملية نقل")
     if status is JobStatus.INTERRUPTED:
         return ("job_interrupted", "warning", "⟡|وقفت عملية نقل")
     return ("job_completed", "info", "✅|اكتملت عملية نقل")
@@ -113,7 +113,7 @@ def _job_final_body(
 ) -> str:
     """Render a concise Arabic body for a finished-job system event."""
     parts = [f"⟡|العملية <code>#{job_id}</code>: {invited or 0} أضيف, "
-             f"{skipped or 0} تم تخطيها, {failed or 0} خالد"]
+             f"{skipped or 0} تم تخطيها, {failed or 0} فشل"]
     if error:
         parts.append(f"›|السبب: <code>{error}</code>")
     return "\n".join(parts)
@@ -345,6 +345,7 @@ class JobManager:
                             severity="info",
                             title="▶|بدأت عملية نقل",
                             body=f"⟡|العملية <code>#{job_id}</code> بدأت التنفيذ.",
+                            data={"job_id": job_id, "owner_id": owner_id},
                         )
                     )
                 except Exception:  # pragma: no cover - publish never raises

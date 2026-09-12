@@ -312,15 +312,9 @@ class Broadcaster:
                 owner_id=campaign["admin_id"],
                 detail={"campaign_id": campaign_id},
             )
-            await self._publish_system_event(
-                SystemEvent(
-                    event_type="broadcast_failed",
-                    severity="info",
-                    title="↺|ألغي بث",
-                    body=f"⟡|الحملة <code>#{campaign_id}</code> ألغيت بواسطة المشرف.",
-                    data={"campaign_id": campaign_id, "admin_id": campaign["admin_id"]},
-                )
-            )
+            # The _run_campaign finalization path publishes the system event
+            # for cancelled campaigns (so there is exactly one notification per
+            # cancellation instead of two).
         return True
 
     async def _publish_system_event(self, event: SystemEvent) -> None:
@@ -674,27 +668,45 @@ class Broadcaster:
             counters["sent"], counters["blocked"],
             counters["failed"], counters["skipped"], total, finished=True,
         )
-        await self._publish_system_event(
-            SystemEvent(
-                event_type="broadcast_completed",
-                severity="error" if final_status == "failed" else "info",
-                title="✅|اكمل البث" if final_status == BroadcastStatus.COMPLETED.value
-                else "×|فشل البث",
-                body=(
-                    f"⟡|الحملة <code>#{cid}</code>: "
+        if final_status == BroadcastStatus.CANCELLED.value:
+            await self._publish_system_event(
+                SystemEvent(
+                    event_type="broadcast_failed",
+                    severity="warning",
+                    title="↺|ألغي بث",
+                    body=f"⟡|الحملة <code>#{cid}</code>: "
                     f"{counters['sent']} أرسلت، "
                     f"{counters['blocked']} ممنوع، "
                     f"{counters['failed']} فشل، "
                     f"{counters['skipped']} تم تخطيها."
+                    + " ألغيت بواسطة المشرف.",
+                    data={
+                        "campaign_id": cid, "admin_id": campaign["admin_id"],
+                        "sent": counters["sent"], "blocked": counters["blocked"],
+                        "failed": counters["failed"], "skipped": counters["skipped"],
+                        "cancelled": True,
+                    },
                 ),
-                data={
-                    "campaign_id": cid, "admin_id": campaign["admin_id"],
-                    "sent": counters["sent"], "blocked": counters["blocked"],
-                    "failed": counters["failed"], "skipped": counters["skipped"],
-                    "cancelled": cancel_evt.is_set(),
-                },
             )
-        )
+        else:
+            await self._publish_system_event(
+                SystemEvent(
+                    event_type="broadcast_completed",
+                    severity="info",
+                    title="✅|اكمل البث",
+                    body=f"⟡|الحملة <code>#{cid}</code>: "
+                    f"{counters['sent']} أرسلت، "
+                    f"{counters['blocked']} ممنوع، "
+                    f"{counters['failed']} فشل، "
+                    f"{counters['skipped']} تم تخطيها.",
+                    data={
+                        "campaign_id": cid, "admin_id": campaign["admin_id"],
+                        "sent": counters["sent"], "blocked": counters["blocked"],
+                        "failed": counters["failed"], "skipped": counters["skipped"],
+                        "cancelled": False,
+                    },
+                ),
+            )
         self._progress_cards.pop(cid, None)
         self._tasks.pop(cid, None)
         self._cancel_events.pop(cid, None)

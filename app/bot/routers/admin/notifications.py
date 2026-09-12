@@ -40,7 +40,7 @@ async def _render_page(cb: CallbackQuery, db: Database, page: int = 0) -> None:
     unread = await repo.count_unread_notifications(db, admin_id)
     notifs = await repo.list_notifications(
         db, admin_id, limit=NOTIFS_PER_PAGE,
-        offset=page * NOTIFS_PER_PAGE, include_dismissed=True,
+        offset=page * NOTIFS_PER_PAGE, include_dismissed=False,
     )
     await safe_edit(
         cb,
@@ -74,7 +74,8 @@ async def cb_notify_read(cb: CallbackQuery, db: Database) -> None:
     if notif_id is None:
         await safe_edit(cb, "⚠️ غير موجود.", reply_markup=_back_to_menu_kb())
         return
-    await repo.mark_notification_read(db, notif_id)
+    admin_id = cb.from_user.id if cb.from_user else 0
+    await repo.mark_notification_read(db, notif_id, admin_id)
     await _render_page(cb, db, page=0)
 
 
@@ -95,7 +96,8 @@ async def cb_notify_dismiss(cb: CallbackQuery, db: Database) -> None:
     if notif_id is None:
         await safe_edit(cb, "⚠️ غير موجود.", reply_markup=_back_to_menu_kb())
         return
-    await repo.dismiss_notification(db, notif_id)
+    admin_id = cb.from_user.id if cb.from_user else 0
+    await repo.dismiss_notification(db, notif_id, admin_id)
     await _render_page(cb, db, page=0)
 
 

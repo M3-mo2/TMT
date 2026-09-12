@@ -522,3 +522,34 @@ async def test_auth_revoked_abort_marks_account_unauthorized_and_discards_client
     # Not limited: re-login (re-add) is the remedy, not a cooldown.
     with pytest.raises(ServiceError):  # unauthorized refused at create_job
         await h.jm.create_job(OWNER, account_id, entity(), entity(id=222, raw_ref="@d"))
+
+
+# ---------------------------------------------------------------- _job_final_event mapping
+
+
+def test_job_final_event_severity_matches_docs() -> None:
+    """Severity per docs/notifications §3.1: completed=info, failed=error,
+    cancelled=warning, interrupted=warning."""
+    from app.core.job_manager import _job_final_event
+
+    assert _job_final_event(JobStatus.COMPLETED, 1, 0, 0, 0, None) == (
+        "job_completed", "info", "✅|اكتملت عملية نقل",
+    )
+    assert _job_final_event(JobStatus.FAILED, 1, 0, 0, 0, "x") == (
+        "job_failed", "error", "×|فشلت عملية نقل",
+    )
+    assert _job_final_event(JobStatus.CANCELLED, 1, 0, 0, 0, None) == (
+        "job_cancelled", "warning", "↺|ألغيت عملية نقل",
+    )
+    assert _job_final_event(JobStatus.INTERRUPTED, 1, 0, 0, 0, "x") == (
+        "job_interrupted", "warning", "⟡|وقفت عملية نقل",
+    )
+
+
+def test_job_final_body_uses_correct_arabic() -> None:
+    """The body must say 'فشل' (failed), not a name like 'خالد'."""
+    from app.core.job_manager import _job_final_body
+
+    body = _job_final_body(5, JobStatus.FAILED, 10, 3, 2, "timeout")
+    assert "فشل" in body
+    assert "خالد" not in body

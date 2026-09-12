@@ -497,3 +497,54 @@ async def test_broadcaster_recover_resumes_incomplete(
     campaign = await repo.get_broadcast(db, cid)
     assert campaign["sent"] == 3  # all 3 eventually sent
     await bc2.shutdown()
+
+
+# ---------------------------------------------------------------- cancellation event
+
+
+async def test_cancel_publishes_exactly_one_event(
+    db: Database, config: Config, bot_factory,
+) -> None:
+    """Cancelling a running broadcast must publish exactly ONE failure/cancel
+    system event from the finalization path (not two — previously cancel()
+    + finalization both fired)."""
+    from app.core.events import SystemEvent
+
+    bot = bot_factory(call_delay=0.5)  # slow sends so worker stays running
+    users = [1, 2, 3]
+    cid = await setup_campaign(db, config, users=users)
+
+    # Capture SystemEvents on the bus.
+    bus = EventBus()
+    captured: list[SystemEvent] = []
+
+    async def _capture(ev: Any) -> None:
+        if isinstance(ev, SystemEvent):
+            captured.append(ev)
+
+    bus.subscribe(_capture)
+
+    bc = Broadcaster(db, config, bus)
+    await bc.start(cid, bot)
+    await asyncio.sleep(0.1)  # let it start running
+
+    await bc.cancel(cid, bot)
+
+    # Wait for worker finalization.
+    task = bc._tasks.get(cid)
+    if task:
+        try:
+            await asyncio.wait_for(task, timeout=10)
+        except asyncio.TimeoutError:
+            pass
+
+    await bc.shutdown()
+
+    # broadcast_started is emitted by start(); the finalization emits exactly
+    # one SystemEvent for the cancellation (broadcast_failed).
+    event_types = [e.event_type for e in captured]
+    assert "broadcast_failed" in event_types
+    # No broadcast_completed for a cancelled campaign.
+    assert "broadcast_completed" not in event_types
+    # Exactly two events: started + the single cancellation event.
+    assert len(captured) == 2

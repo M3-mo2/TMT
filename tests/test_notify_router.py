@@ -23,7 +23,7 @@ from app.bot.routers.admin.keyboards import (
     notify_settings_kb,
 )
 from app.bot.texts import (
-    M_NOTIFY_TITLE,
+    M_NOTIFY_TITLE, M_NOTIFY_EMPTY,
     notification_event_label,
     notification_severity_label,
     render_notifications_list,
@@ -191,6 +191,39 @@ async def test_cb_notify_list(db: Database, config: Config, mock_edit: AsyncMock
     mock_edit.assert_awaited_once()
     text = mock_edit.call_args.args[1]
     assert M_NOTIFY_TITLE in text
+
+
+async def test_cb_notify_list_excludes_dismissed(db: Database, mock_edit: AsyncMock) -> None:
+    """Dismissed notifications must not appear in the inbox (RULES §4 / §7)."""
+    nid = await _seed_notifications(db, 1001, 1)
+    await repo.dismiss_notification(db, nid[0], 1001)
+    cb = make_cb(C.NOTIFY, user_id=1001)
+    await cb_notify_list(cb, db=db)
+    cb.answer.assert_awaited_once()
+    text = mock_edit.call_args.args[1]
+    assert M_NOTIFY_EMPTY in text  # inbox is empty because the only notif was dismissed
+
+
+async def test_cb_notify_read_scoped_to_owner(db: Database, mock_edit: AsyncMock) -> None:
+    """An admin cannot mark-read a notification that belongs to another admin."""
+    nid = await repo.create_notification(db, owner_id=1001, event_type="x", title="t", body="b")
+    cb = make_cb(f"{C.NOTIFY_READ}{nid}", user_id=9999)  # foreign admin
+    await cb_notify_read(cb, db=db)
+    row = await db.fetch_one(
+        "SELECT read_at FROM notifications WHERE id=?", (nid,)
+    )
+    assert row["read_at"] is None  # untouched — ownership enforced
+
+
+async def test_cb_notify_dismiss_scoped_to_owner(db: Database, mock_edit: AsyncMock) -> None:
+    """An admin cannot dismiss a notification that belongs to another admin."""
+    nid = await repo.create_notification(db, owner_id=1001, event_type="x", title="t", body="b")
+    cb = make_cb(f"{C.NOTIFY_DISMISS}{nid}", user_id=9999)  # foreign admin
+    await cb_notify_dismiss(cb, db=db)
+    row = await db.fetch_one(
+        "SELECT dismissed FROM notifications WHERE id=?", (nid,)
+    )
+    assert row["dismissed"] == 0  # untouched — ownership enforced
 
 
 async def test_cb_notify_list_with_pagination(db: Database, mock_edit: AsyncMock) -> None:

@@ -131,7 +131,15 @@ class NotificationService:
     # ------------------------------------------------------------------ config
 
     def _config_enabled(self, event_type: str) -> bool:
-        """Global config gate for notification categories."""
+        """Global config gate for notification categories.
+
+        Returns ``True`` when the event type is enabled at the global config
+        level.  ``account_added`` and ``account_removed`` are always-on
+        (security-relevant, low-volume — docs/notifications §3.1).  All other
+        error-severity events (``peer_flood``, ``flood_wait``,
+        ``account_unauthorized``) are gated by ``notify_on_error``."""
+        if event_type in ("account_added", "account_removed"):
+            return True
         if event_type == "user_joined":
             return self._config.notify_on_user_join
         if event_type in (
@@ -139,13 +147,13 @@ class NotificationService:
             "job_cancelled", "job_interrupted",
         ):
             return self._config.notify_on_job_events
-        if event_type in ("flood_wait", "peer_flood"):
+        if event_type in (
+            "flood_wait", "peer_flood", "account_unauthorized",
+        ):
             return self._config.notify_on_error
         if event_type in (
             "broadcast_started", "broadcast_completed",
             "broadcast_failed",
         ):
             return self._config.notify_on_broadcast_events
-        # account_added, account_removed, account_unauthorized — always on
-        # (these are security-relevant and small in volume)
         return True

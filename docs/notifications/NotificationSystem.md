@@ -111,21 +111,27 @@ system notifications:
 | `user_joined` | info | user | `UserGateMiddleware` |
 | `account_added` | info | account | `AccountService.save_login` |
 | `account_removed` | info | account | `AccountService.remove` |
-| `account_unauthorized` | error | account | `JobManager._mark_account_fatal` |
-| `peer_flood` | error | error | `JobManager._mark_account_fatal` |
-| `flood_wait` | warning | error | `JobManager` (pending) |
-| `job_started` | info | job | `JobManager._run_job` |
-| `job_completed` | info | job | `JobManager._finalize` |
-| `job_failed` | error | job | `JobManager._finalize` |
-| `job_cancelled` | warning | job | `JobManager.cancel_job` |
-| `job_interrupted` | warning | job | `JobManager` recovery path |
-| `broadcast_started` | info | broadcast | `Broadcaster.start` |
-| `broadcast_completed` | info | broadcast | `Broadcaster._run_campaign` |
-| `broadcast_failed` | error | broadcast | `Broadcaster._run_campaign` / `cancel` |
+ | `account_unauthorized` | error | error | `JobManager._mark_account_fatal` |
+ | `peer_flood` | error | error | `JobManager._mark_account_fatal` |
+ | `flood_wait` | warning | error | `JobManager` (pending) |
+ | `job_started` | info | job | `JobManager._run_job` |
+ | `job_completed` | info | job | `JobManager._finalize` |
+ | `job_failed` | error | job | `JobManager._finalize` |
+ | `job_cancelled` | warning | job | `JobManager.cancel_job` |
+ | `job_interrupted` | warning | job | `JobManager` recovery path |
+ | `broadcast_started` | info | broadcast | `Broadcaster.start` |
+ | `broadcast_completed` | info | broadcast | `Broadcaster._run_campaign` |
+ | `broadcast_failed` | error* | broadcast | `Broadcaster._run_campaign` |
+
+> **\* Severity note**: `broadcast_failed` from `_run_campaign` finalization uses
+> `warning` severity when the campaign was *cancelled* by an admin (silent but
+> noteworthy), and `error` for hard failures.
 
 > **Note**: `account_added` and `account_removed` events are always-on (no
 > config toggle).  They are security-relevant and low-volume, so fail-open is
-> the safe default.
+> the safe default.  `account_unauthorized` is **not** always-on — it is an
+> error-severity event gated by `notify_on_error`, like `peer_flood` and
+> `flood_wait`.
 
 ### 3.2 Config Surface
 
@@ -177,7 +183,10 @@ CREATE INDEX idx_notifications_unread ON notifications(owner_id, read_at, dismis
   remains `0` if the send fails.  This enables a future "resend" button.
 - **Soft-dismiss vs delete**: Dismissing marks `dismissed=1` (keeps the row for
   audit).  A separate `delete_notification` function exists for permanent
-  removal (GDPR cleanup).
+  removal (GDPR cleanup).  All three mutations (`mark_notification_read`,
+  `dismiss_notification`, `delete_notification`) are scoped by `owner_id`
+  (RULES §4) so an admin cannot modify another admin's notifications by
+  enumerating IDs.
 - **`created_at` in app code**: Uses `now_iso()` from `repositories.py`, not
   SQLite `datetime('now')`, for cross-engine portability (RULES §6).
 
@@ -242,11 +251,15 @@ EventBus.publish(SystemEvent)
     │     1. Check config kill-switch (notify_on_*)
     │     2. For each admin_id in config.admin_id_list:
     │         a. Check per-admin setting (is_notification_enabled)
-    │         b. Create notification row  (create_notification)
+    │         b. Create notification row  (create_notification, scoped by owner_id)
     │         c. Best-effort DM           (_try_dm → bot.send_message)
     │
     └─ JobProgressReporter._on_progress / _on_finished   [existing, unchanged]
 ```
+
+> **Note on event sources**: `Broadcaster.cancel()` only persists the DB status
+> and audit row — the system event for a cancelled broadcast is published once,
+> by the `_run_campaign` finalization path (which sees `cancel_evt.is_set()`).
 
 #### 3.4.2 Layer Boundaries (RULES §1)
 
@@ -275,7 +288,7 @@ Key methods:
 | `set_bot(bot)` | Inject the `aiogram.Bot` instance (created after dispatcher) |
 | `_on_system_event(event)` | Main handler — config gate → per-admin loop → row + DM |
 | `_try_dm(admin_id, event)` | Best-effort DM with `disable_notification` based on severity |
-| `_config_enabled(event_type)` | Map event types to config flags (user_joined → notify_on_user_join, etc.) |
+ | `_config_enabled(event_type)` | Map event types to config flags (user_joined → notify_on_user_join; job_* → notify_on_job_events; flood_wait/peer_flood/account_unauthorized → notify_on_error; broadcast_* → notify_on_broadcast_events; account_added/account_removed → always-on)
 
 #### 3.5.1 Severity → Silent/Fail
 
@@ -332,7 +345,10 @@ break through Do-Not-Disturb while informational events don't spam.
 استخدم الأزرار للتنقل ↓
 ```
 
-Buttons: ✓ (read), 🗑 (dismiss), pagination «/».
+Buttons: ✓ (read), 🗑 (dismiss), pagination «/».  Dismissed notifications
+are excluded from the inbox (they remain in the DB for audit).  Read/dismiss
+operations are scoped by `owner_id` — an admin cannot act on another admin's
+notification (RULES §4).
 
 #### 3.6.3 Settings Layout
 
@@ -394,10 +410,11 @@ Applied atomically within a single `BEGIN IMMEDIATE`/`COMMIT` block by
 | `app/config.py` | Added `notify_on_user_join`, `notify_on_job_events`, `notify_on_error`, `notify_on_broadcast_events` fields |
 | `app/bot/middlewares.py` | `UserGateMiddleware` accepts optional `bus`, publishes `user_joined` on new user |
 | `app/core/account_service.py` | Accepts optional `bus`, publishes `account_added`/`account_removed` |
-| `app/core/job_manager.py` | Publishes `job_started`/`job_completed`/`job_failed`/`job_cancelled`/`job_interrupted`/`peer_flood`/`account_unauthorized` |
-| `app/core/broadcast.py` | Publishes `broadcast_started`/`broadcast_completed`/`broadcast_failed` |
+| `app/core/job_manager.py` | Publishes `job_started` (with `data`), `job_completed`/`job_failed`/`job_cancelled`/`job_interrupted`/`peer_flood`/`account_unauthorized`; `job_cancelled` severity is `warning` per docs §3.1 |
+| `app/core/broadcast.py` | Publishes `broadcast_started`/`broadcast_completed`/`broadcast_failed` (cancelled broadcasts publish `broadcast_failed` with `warning` severity from finalization; `cancel()` no longer double-publishes) |
 | `app/bot/__init__.py` | `build_dispatcher` accepts `notifications`, injects `dp["notifications"]`, passes `bus` to middleware |
 | `app/main.py` | Creates `NotificationService`, wires lifecycle, passes to `build_dispatcher` |
+| `app/bot/routers/admin/notifications.py` (router) | Inbox/list/read/dismiss/settings/toggle handlers with owner_id scoping |
 | `app/bot/routers/admin/callbacks.py` | Added `NOTIFY` constants |
 | `app/bot/routers/admin/keyboards.py` | Added `notifications_list_kb`, `notify_settings_kb` |
 | `app/bot/routers/admin/router.py` | Registered notifications router |

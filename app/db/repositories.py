@@ -895,12 +895,17 @@ async def count_unread_notifications(db: Database, owner_id: int) -> int:
     return int(row["c"]) if row else 0
 
 
-async def mark_notification_read(db: Database, notification_id: int) -> bool:
-    """Mark a single notification as read; returns True if a row was updated."""
+async def mark_notification_read(
+    db: Database, notification_id: int, owner_id: int
+) -> bool:
+    """Mark a single notification as read; returns True if a row was updated.
+
+    Scoped by ``owner_id`` (RULES §4): an admin cannot mark-read another
+    admin's notification by guessing IDs."""
     cur = await db.conn.execute(
         "UPDATE notifications SET read_at=? "
-        "WHERE id=? AND read_at IS NULL",
-        (now_iso(), notification_id),
+        "WHERE id=? AND owner_id=? AND read_at IS NULL",
+        (now_iso(), notification_id, owner_id),
     )
     return cur.rowcount > 0
 
@@ -915,20 +920,31 @@ async def mark_all_notifications_read(db: Database, owner_id: int) -> int:
     return cur.rowcount
 
 
-async def dismiss_notification(db: Database, notification_id: int) -> bool:
-    """Dismiss (hide) a notification; returns True if a row was updated."""
+async def dismiss_notification(
+    db: Database, notification_id: int, owner_id: int
+) -> bool:
+    """Dismiss (hide) a notification; returns True if a row was updated.
+
+    Scoped by ``owner_id`` (RULES §4): an admin cannot dismiss another
+    admin's notification by guessing IDs."""
     cur = await db.conn.execute(
         "UPDATE notifications SET dismissed=1, read_at=COALESCE(read_at, ?) "
-        "WHERE id=? AND dismissed=0",
-        (now_iso(), notification_id),
+        "WHERE id=? AND owner_id=? AND dismissed=0",
+        (now_iso(), notification_id, owner_id),
     )
     return cur.rowcount > 0
 
 
-async def delete_notification(db: Database, notification_id: int) -> bool:
-    """Permanently delete a notification row; returns True if a row was deleted."""
+async def delete_notification(
+    db: Database, notification_id: int, owner_id: int
+) -> bool:
+    """Permanently delete a notification row; returns True if a row was deleted.
+
+    Scoped by ``owner_id`` (RULES §4): GDPR cleanup must be restricted to the
+    admin's own notifications."""
     cur = await db.conn.execute(
-        "DELETE FROM notifications WHERE id=?", (notification_id,)
+        "DELETE FROM notifications WHERE id=? AND owner_id=?",
+        (notification_id, owner_id),
     )
     return cur.rowcount > 0
 

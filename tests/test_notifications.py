@@ -118,7 +118,7 @@ async def test_list_notifications_scoped_to_owner(db: Database) -> None:
 async def test_list_notifications_unread_only(db: Database) -> None:
     await repo.create_notification(db, owner_id=1, event_type="x", title="r1", body="b")
     n2 = await repo.create_notification(db, owner_id=1, event_type="x", title="r2", body="b")
-    await repo.mark_notification_read(db, n2)
+    await repo.mark_notification_read(db, n2, 1)
     rows = await repo.list_notifications(db, 1, unread_only=True)
     titles = [r["title"] for r in rows]
     assert "r1" in titles
@@ -128,7 +128,7 @@ async def test_list_notifications_unread_only(db: Database) -> None:
 async def test_list_notifications_unread_only_excludes_dismissed(db: Database) -> None:
     n1 = await repo.create_notification(db, owner_id=1, event_type="x", title="unread", body="b")
     n2 = await repo.create_notification(db, owner_id=1, event_type="x", title="dismissed", body="b")
-    await repo.dismiss_notification(db, n2)
+    await repo.dismiss_notification(db, n2, 1)
     rows = await repo.list_notifications(db, 1, unread_only=True)
     titles = [r["title"] for r in rows]
     assert "unread" in titles
@@ -138,7 +138,7 @@ async def test_list_notifications_unread_only_excludes_dismissed(db: Database) -
 async def test_list_notifications_excludes_dismissed_by_default(db: Database) -> None:
     await repo.create_notification(db, owner_id=1, event_type="x", title="visible", body="b")
     n2 = await repo.create_notification(db, owner_id=1, event_type="x", title="hidden", body="b")
-    await repo.dismiss_notification(db, n2)
+    await repo.dismiss_notification(db, n2, 1)
     rows = await repo.list_notifications(db, 1)
     titles = [r["title"] for r in rows]
     assert "visible" in titles
@@ -148,7 +148,7 @@ async def test_list_notifications_excludes_dismissed_by_default(db: Database) ->
 async def test_list_notifications_includes_dismissed(db: Database) -> None:
     await repo.create_notification(db, owner_id=1, event_type="x", title="visible", body="b")
     n2 = await repo.create_notification(db, owner_id=1, event_type="x", title="hidden", body="b")
-    await repo.dismiss_notification(db, n2)
+    await repo.dismiss_notification(db, n2, 1)
     rows = await repo.list_notifications(db, 1, include_dismissed=True)
     titles = [r["title"] for r in rows]
     assert "visible" in titles
@@ -172,9 +172,9 @@ async def test_count_unread_notifications(db: Database) -> None:
     await repo.create_notification(db, owner_id=1, event_type="x", title="u1", body="b")
     await repo.create_notification(db, owner_id=1, event_type="x", title="u2", body="b")
     un1 = await repo.create_notification(db, owner_id=1, event_type="x", title="r1", body="b")
-    await repo.mark_notification_read(db, un1)
+    await repo.mark_notification_read(db, un1, 1)
     un2 = await repo.create_notification(db, owner_id=1, event_type="x", title="d1", body="b")
-    await repo.dismiss_notification(db, un2)
+    await repo.dismiss_notification(db, un2, 1)
     # u1 and u2 are unread + not dismissed; r1 is read, d1 is dismissed→auto-read
     assert await repo.count_unread_notifications(db, 1) == 2
 
@@ -184,7 +184,7 @@ async def test_count_unread_notifications(db: Database) -> None:
 
 async def test_mark_notification_read(db: Database) -> None:
     nid = await repo.create_notification(db, owner_id=1, event_type="x", title="t", body="b")
-    ok = await repo.mark_notification_read(db, nid)
+    ok = await repo.mark_notification_read(db, nid, 1)
     assert ok
     row = await db.fetch_one("SELECT read_at FROM notifications WHERE id=?", (nid,))
     assert row["read_at"] is not None
@@ -192,8 +192,8 @@ async def test_mark_notification_read(db: Database) -> None:
 
 async def test_mark_notification_read_idempotent(db: Database) -> None:
     nid = await repo.create_notification(db, owner_id=1, event_type="x", title="t", body="b")
-    assert await repo.mark_notification_read(db, nid)
-    assert not await repo.mark_notification_read(db, nid)  # already read
+    assert await repo.mark_notification_read(db, nid, 1)
+    assert not await repo.mark_notification_read(db, nid, 1)  # already read
 
 
 async def test_mark_all_notifications_read(db: Database) -> None:
@@ -212,7 +212,7 @@ async def test_mark_all_notifications_read(db: Database) -> None:
 
 async def test_dismiss_notification(db: Database) -> None:
     nid = await repo.create_notification(db, owner_id=1, event_type="x", title="t", body="b")
-    ok = await repo.dismiss_notification(db, nid)
+    ok = await repo.dismiss_notification(db, nid, 1)
     assert ok
     row = await db.fetch_one("SELECT dismissed, read_at FROM notifications WHERE id=?", (nid,))
     assert row["dismissed"] == 1
@@ -221,16 +221,46 @@ async def test_dismiss_notification(db: Database) -> None:
 
 async def test_dismiss_notification_idempotent(db: Database) -> None:
     nid = await repo.create_notification(db, owner_id=1, event_type="x", title="t", body="b")
-    assert await repo.dismiss_notification(db, nid)
-    assert not await repo.dismiss_notification(db, nid)
+    assert await repo.dismiss_notification(db, nid, 1)
+    assert not await repo.dismiss_notification(db, nid, 1)
 
 
 async def test_delete_notification(db: Database) -> None:
     nid = await repo.create_notification(db, owner_id=1, event_type="x", title="t", body="b")
-    ok = await repo.delete_notification(db, nid)
+    ok = await repo.delete_notification(db, nid, 1)
     assert ok
     row = await db.fetch_one("SELECT * FROM notifications WHERE id=?", (nid,))
     assert row is None
+
+
+# ---------------------------------------------------------------- repository: owner isolation
+
+
+async def test_mark_read_is_scoped_to_owner(db: Database) -> None:
+    """An admin cannot mark-read a notification belonging to another admin."""
+    nid = await repo.create_notification(db, owner_id=1, event_type="x", title="t", body="b")
+    ok = await repo.mark_notification_read(db, nid, 2)  # wrong owner
+    assert ok is False
+    row = await db.fetch_one("SELECT read_at FROM notifications WHERE id=?", (nid,))
+    assert row["read_at"] is None  # untouched
+
+
+async def test_dismiss_is_scoped_to_owner(db: Database) -> None:
+    """An admin cannot dismiss a notification belonging to another admin."""
+    nid = await repo.create_notification(db, owner_id=1, event_type="x", title="t", body="b")
+    ok = await repo.dismiss_notification(db, nid, 2)  # wrong owner
+    assert ok is False
+    row = await db.fetch_one("SELECT dismissed FROM notifications WHERE id=?", (nid,))
+    assert row["dismissed"] == 0  # untouched
+
+
+async def test_delete_is_scoped_to_owner(db: Database) -> None:
+    """An admin cannot delete a notification belonging to another admin."""
+    nid = await repo.create_notification(db, owner_id=1, event_type="x", title="t", body="b")
+    ok = await repo.delete_notification(db, nid, 2)  # wrong owner
+    assert ok is False
+    row = await db.fetch_one("SELECT * FROM notifications WHERE id=?", (nid,))
+    assert row is not None  # still exists
 
 
 # ---------------------------------------------------------------- repository: settings
@@ -363,6 +393,45 @@ async def test_notifier_no_admins_configured(db: Database) -> None:
     assert bot.sent == []
     rows = await db.fetch_all("SELECT * FROM notifications")
     assert rows == []  # no rows written when there are no admins
+
+
+async def test_notifier_account_unauthorized_gated_by_notify_on_error(db: Database) -> None:
+    """account_unauthorized is an error-severity event; it must be silenced when
+    notify_on_error is False (only account_added/account_removed are always-on)."""
+    config = Config(
+        bot_token="123456:test-token", api_id=1,
+        api_hash="0123456789abcdef0123456789abcdef",
+        admin_ids="1", notify_on_error=False,
+    )
+    notifier = NotificationService(db, config, EventBus())
+    notifier.subscribe()
+    bot = FakeBot()
+    notifier.set_bot(bot)
+    await notifier._bus.publish(SystemEvent(
+        event_type="account_unauthorized", severity="error", title="T", body="B",
+    ))
+    assert bot.sent == []
+    rows = await db.fetch_all("SELECT * FROM notifications")
+    assert rows == []
+
+
+async def test_notifier_account_added_always_on(db: Database) -> None:
+    """account_added is always-on even when notify_on_error is False."""
+    config = Config(
+        bot_token="123456:test-token", api_id=1,
+        api_hash="0123456789abcdef0123456789abcdef",
+        admin_ids="1", notify_on_error=False,
+    )
+    notifier = NotificationService(db, config, EventBus())
+    notifier.subscribe()
+    bot = FakeBot()
+    notifier.set_bot(bot)
+    await notifier._bus.publish(SystemEvent(
+        event_type="account_added", severity="info", title="T", body="B",
+    ))
+    assert len(bot.sent) == 1
+    rows = await db.fetch_all("SELECT * FROM notifications")
+    assert len(rows) == 1
 
 
 async def test_notifier_does_not_process_non_system_events(
