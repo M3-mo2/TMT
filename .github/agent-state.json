@@ -1,19 +1,8 @@
 {
-  "task": "I want a report (the folder must be written in the appropriate path/location) about the problems that can occur in the UI/UX or in the mandatory subscription process itself. Examine the flow itself carefully, discover potential problems, and write a report.",
-  "max_cycles": 15,
+  "task": "I need a pricing system that I can enable or disable from the control panel. It needs to be flexible and easily customizable, allowing me to change it or even delete it entirely. The idea is that the pricing system, activated from the control panel, should allow me to freely and flexibly adjust its parameters, setting limits on the number of accounts per user or the maximum number of members that can be transferred. I need the highest possible level of control.",
+  "max_cycles": 100,
   "cycle": 0,
-  "status": "clean",
+  "status": "building",
   "findings": [],
-  "history": [
-    {
-      "agent": "review",
-      "cycle": 0,
-      "result": "clean"
-    },
-    {
-      "agent": "verify",
-      "cycle": 0,
-      "result": "clean"
-    }
-  ]
+  "history": []
 }
