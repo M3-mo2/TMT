@@ -1,19 +1,8 @@
 {
-  "task": "I want a report (the folder must be written in the appropriate path/location) about the problems that can occur in the UI/UX or in the mandatory subscription process itself. Examine the flow itself carefully, discover potential problems, and write a report.",
-  "max_cycles": 15,
+  "task": "I need a periodic backup system that I can manage from the admin panel settings. I want it to automatically send me a copy of the database at set intervals. I also need a backup restore and export section, and it needs to be very flexible and robust—a cohesive system designed correctly, in line with the code, and following best practices. ",
+  "max_cycles": 50,
   "cycle": 0,
-  "status": "clean",
+  "status": "building",
   "findings": [],
-  "history": [
-    {
-      "agent": "review",
-      "cycle": 0,
-      "result": "clean"
-    },
-    {
-      "agent": "verify",
-      "cycle": 0,
-      "result": "clean"
-    }
-  ]
+  "history": []
 }
