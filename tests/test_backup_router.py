@@ -20,6 +20,7 @@ from app.bot.routers.admin import callbacks as C
 from app.bot.texts import (
     M_BACKUP_CREATED,
     M_BACKUP_DELETED,
+    M_BACKUP_EXPORT_FAILED,
     M_BACKUP_RESTORE_BLOCKED,
     M_BACKUP_RESTORE_DONE,
     M_BACKUP_RESTORE_FAILED,
@@ -241,7 +242,7 @@ async def test_cb_backup_export_failure_renders_error(mock_edit: AsyncMock) -> N
     await bk.cb_backup_export(cb, backup=backup)
     assert backup.export_calls == [(1, _ADMIN_ID)]
     text = mock_edit.call_args.args[1]
-    assert M_BACKUP_RESTORE_FAILED.format(error="غير موجود") in text
+    assert M_BACKUP_EXPORT_FAILED.format(error="غير موجود") in text
 
 
 # ------------------------------------------------------------------ restore by list

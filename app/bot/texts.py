@@ -55,7 +55,8 @@ __all__ = [
     "render_notify_settings",
     "M_BACKUPS_TITLE", "M_BACKUPS_EMPTY", "M_BACKUPS_SUMMARY",
     "M_BACKUP_CREATED", "M_BACKUP_CREATE_FAILED", "M_BACKUP_SENT",
-    "M_BACKUP_DELETED", "M_BACKUP_RESTORE_DONE", "M_BACKUP_RESTORE_FAILED",
+    "M_BACKUP_DELETED", "M_BACKUP_EXPORT_FAILED",
+    "M_BACKUP_RESTORE_DONE", "M_BACKUP_RESTORE_FAILED",
     "M_BACKUP_RESTORE_BLOCKED", "M_BACKUP_SECURITY_NOTE",
     "M_BACKUP_SETTINGS", "M_BACKUP_INTERVAL_PROMPT", "M_BACKUP_INTERVAL_INVALID",
     "M_BACKUP_INTERVAL_SAVED", "M_BACKUP_UPLOAD_PROMPT", "M_BACKUP_UPLOADED_INVALID",
@@ -861,6 +862,7 @@ M_BACKUP_CREATED = "✅|تم إنشاء النسخة الاحتياطية وإر
 M_BACKUP_CREATE_FAILED = "× فشل إنشاء النسخة الاحتياطية: {error}"
 M_BACKUP_SENT = "✅|تم إرسال النسخة إلى المحادثة <code>{chat_id}</code>."
 M_BACKUP_DELETED = "✅|تم حذف النسخة الاحتياطية."
+M_BACKUP_EXPORT_FAILED = "× فشل إرسال النسخة الاحتياطية: {error}"
 M_BACKUP_RESTORE_DONE = "✅|تمت استعادة النسخة الاحتياطية بنجاح. تم تحديث قاعدة البيانات."
 M_BACKUP_RESTORE_FAILED = "× فشلت الاستعادة: {error}"
 M_BACKUP_RESTORE_BLOCKED = "× توجد عمليات نشطة الآن، ألغِها أولاً ثم جرّب الاستعادة."

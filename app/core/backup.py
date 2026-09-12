@@ -309,7 +309,6 @@ class BackupService:
         snapshot uses a *separate* read-only connection so the live connection
         is untouched.
         """
-        ts = _now_iso().replace(":", "").replace("-", "")
         # Microsecond precision avoids filename collisions when several backups
         # are produced within the same second (on-demand double-clicks, etc.).
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
@@ -458,6 +457,13 @@ class BackupService:
         """Overwrite the live DB (+ key if present) with the validated sources."""
         if db_src.exists():
             shutil.copy2(db_src, self.db_path)
+            # Drop stale WAL/SHM from the previous live DB so SQLite does not
+            # pick up mismatched pages after the overwrite.
+            for suffix in ("-wal", "-shm"):
+                try:
+                    (self.db_path.parent / f"{self.db_path.name}{suffix}").unlink(missing_ok=True)
+                except OSError:
+                    pass
         if key_src is not None and key_src.exists():
             shutil.copy2(key_src, self.key_path)
 
@@ -472,6 +478,9 @@ class BackupService:
         db_src, key_src = extracted
         # Capture audit-relevant facts before the finally block rmtrees staging.
         db_size = db_src.stat().st_size
+        # The live DB runs in WAL mode; checkpoint so _safety_backup's file copy
+        # captures every committed page (not just what's flushed to bot.db).
+        await self._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         db_safety, key_safety = await asyncio.to_thread(self._safety_backup)
         ok = True
         error: str | None = None
@@ -492,11 +501,16 @@ class BackupService:
                 ok = False
                 error = "swap_failed"
         finally:
-            # Clean staging artifacts regardless of outcome.
+            # Clean staging artifacts + safety copies regardless of outcome.
             try:
                 shutil.rmtree(db_src.parent, ignore_errors=True)
             except Exception:
                 pass
+            for saf in (db_safety, key_safety):
+                try:
+                    saf.unlink(missing_ok=True)
+                except Exception:
+                    pass
         if not ok:
             await repo.audit(
                 self._db, "backup_restore_failed",

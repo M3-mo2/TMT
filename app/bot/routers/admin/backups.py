@@ -35,6 +35,7 @@ from app.bot.texts import (
     M_BACKUP_CREATED,
     M_BACKUP_CREATE_FAILED,
     M_BACKUP_DELETED,
+    M_BACKUP_EXPORT_FAILED,
     M_BACKUP_INTERVAL_INVALID,
     M_BACKUP_INTERVAL_PROMPT,
     M_BACKUP_INTERVAL_SAVED,
@@ -53,7 +54,6 @@ from app.bot.texts import (
 from app.core.backup import BackupService
 from app.core.models import BackupSettings
 from app.db import repositories as repo
-from app.db.database import Database
 from app.services.helpers import safe_edit
 
 logger = logging.getLogger(__name__)
@@ -239,7 +239,7 @@ async def cb_backup_export(cb: CallbackQuery, backup: BackupService) -> None:
     await cb.answer("⟡|جارٍ الإرسال...")
     admin_id = cb.from_user.id if cb.from_user else 0
     if bid is None or not await backup.export_to(bid, admin_id):
-        await safe_edit(cb, M_BACKUP_RESTORE_FAILED.format(error="غير موجود"),
+        await safe_edit(cb, M_BACKUP_EXPORT_FAILED.format(error="غير موجود"),
                         reply_markup=_back_kb(f"{C.BAK_OPEN}{bid}" if bid is not None else C.BAK))
         return
     await safe_edit(
@@ -301,7 +301,7 @@ async def cb_backup_restore_prompt(cb: CallbackQuery, backup: BackupService) -> 
         return
     await safe_edit(
         cb,
-        f"× تأكيد استعادة النسخة <b>#{bid}</code> — "
+        f"× تأكيد استعادة النسخة <b>#{bid}</b> — "
         "سيتم استبدال قاعدة البيانات الحالية بالكامل.\n\n"
         "⚠️|هذا الإجراء لا يمكن التراجع عنه.",
         reply_markup=backup_restore_confirm_kb(bid),
