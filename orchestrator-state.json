@@ -1,3 +1,8 @@
 {
-  "delegated_prs": []
+  "delegated_prs": [
+    {
+      "pr": 12,
+      "note": "auto-tracked new build"
+    }
+  ]
 }
