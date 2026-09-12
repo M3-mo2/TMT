@@ -115,7 +115,7 @@ permissions:
   issues: write
 
 env:
-  BOT_NAME: "mohamed-AFYU" # ⚠️ غيّر ده لاسم حساب الـ PAT_TOKEN بتاعك
+  BOT_NAME: "M3-mo2" # ⚠️ غيّر ده لاسم حساب الـ PAT_TOKEN بتاعك
   STATE_FILE: ".github/agent-state.json"
 
 concurrency:
@@ -716,7 +716,7 @@ jobs:
     if: |
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request != null &&
-      github.event.comment.user.login != 'mohamed-AFYU' &&
+      github.event.comment.user.login != 'M3-mo2' &&
       contains(github.event.issue.labels.*.name, 'agent:decision') &&
       (startsWith(github.event.comment.body, '/merge yes') || startsWith(github.event.comment.body, '/merge no'))
     runs-on: ubuntu-latest
@@ -755,7 +755,7 @@ jobs:
     if: |
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request != null &&
-      github.event.comment.user.login != 'mohamed-AFYU' &&
+      github.event.comment.user.login != 'M3-mo2' &&
       !startsWith(github.event.comment.body, '/merge yes') &&
       !startsWith(github.event.comment.body, '/merge no') &&
       (contains(github.event.issue.labels.*.name, 'agent:review') ||
@@ -854,7 +854,7 @@ jobs:
     if: |
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request != null &&
-      github.event.comment.user.login != 'mohamed-AFYU' &&
+      github.event.comment.user.login != 'M3-mo2' &&
       !startsWith(github.event.comment.body, '/merge yes') &&
       !startsWith(github.event.comment.body, '/merge no') &&
       (contains(github.event.issue.labels.*.name, 'agent:merged') ||
