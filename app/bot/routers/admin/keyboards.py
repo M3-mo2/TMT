@@ -24,6 +24,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
                 _btn("📢 البث", C.BCAST),
             ],
             [
+                _btn("💾 النسخ الاحتياطية", C.BAK),
                 _btn("🔔 الإشعارات", C.NOTIFY),
             ],
             [
@@ -211,8 +212,71 @@ def broadcast_history_kb(page: int, total_pages: int) -> InlineKeyboardMarkup:
 def settings_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_btn("🌐 اللغة", C.SET_LANG)],
+            [_btn("🌐 اللغة", C.SET_LANG), _btn("💾 النسخ الاحتياطية", C.BAK_SETTINGS)],
             [_btn("› رجوع", C.MENU)],
+        ]
+    )
+
+
+def backup_menu_kb() -> InlineKeyboardMarkup:
+    """Backups root menu."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("⟡ الإعدادات", C.BAK_SETTINGS), _btn("📜 السجل", C.BAK_HISTORY)],
+            [_btn("› نسخة الآن", C.BAK_NEW), _btn("↑ رفع أرشيف", C.BAK_UPLOAD_START)],
+            [_btn("› رجوع للقائمة", C.MENU)],
+        ]
+    )
+
+
+def backup_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
+    """Settings screen: toggle + interval edit."""
+    on = "✅ مفعل" if enabled else "❌ غير مفعل"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn(on, C.BAK_TOGGLE)],
+            [_btn("⟡ تعديل الفاصل الزمني", C.BAK_INTERVAL)],
+            [_btn("📜 السجل", C.BAK_HISTORY), _btn("› نسخة الآن", C.BAK_NEW)],
+            [_btn("› رجوع", C.BAK)],
+        ]
+    )
+
+
+def backup_interval_back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[_btn("› رجوع", C.BAK_SETTINGS)]],
+    )
+
+
+def backup_history_kb(page: int, total_pages: int) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(_btn("← السابق", f"{C.BAK_PAGE}{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(_btn("التالي →", f"{C.BAK_PAGE}{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([_btn("⟡ الإعدادات", C.BAK_SETTINGS), _btn("› نسخة الآن", C.BAK_NEW)])
+    rows.append([_btn("› رجوع للقائمة", C.MENU)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def backup_detail_kb(backup_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("› إرسالها لي", f"{C.BAK_EXPORT}{backup_id}")],
+            [_btn("› استعادة", f"{C.BAK_RESTORE}{backup_id}"), _btn("× حذف", f"{C.BAK_DELETE}{backup_id}")],
+            [_btn("› السجل", C.BAK_HISTORY), _btn("› رجوع", C.BAK)],
+        ]
+    )
+
+
+def backup_restore_confirm_kb(backup_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("✅ تأكيد الاستعادة", f"{C.BAK_RESTORE_CONFIRM}{backup_id}")],
+            [_btn("› رجوع", f"{C.BAK_OPEN}{backup_id}")],
         ]
     )
 

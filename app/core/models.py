@@ -36,6 +36,17 @@ ACTIVE_JOB_STATUSES = frozenset(
 )
 
 
+class BackupStatus(str, Enum):
+    """Lifecycle of a backup archive record."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    OK = "ok"
+    SENT = "sent"
+    FAILED = "failed"
+
+
+# Standard skip-reason keys (counted per job, rendered in Arabic by bot layer).
 class CheckStatus(str, Enum):
     PASS = "pass"
     WARN = "warn"
@@ -135,3 +146,30 @@ SKIP_TOO_MANY = "channels_too_much"
 SKIP_KICKED = "kicked"
 SKIP_DELETED = "deleted_account"
 SKIP_OTHER = "other"
+
+
+@dataclass(frozen=True, slots=True)
+class BackupRecord:
+    """A single backup archive produced by the BackupService."""
+
+    id: int
+    filename: str
+    file_size: int
+    status: BackupStatus
+    created_at: str
+    sent_to: int | None
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BackupSettings:
+    """Resolved backup configuration: DB setting or Config default.
+
+    ``enabled`` and ``interval_hours`` are admin-tunable (stored in
+    ``app_settings``); ``chat_id`` defaults to the first configured admin so the
+    operator receives backups without extra setup.
+    """
+
+    enabled: bool
+    interval_hours: int
+    chat_id: int | None

@@ -18,6 +18,7 @@ from app.bot import build_dispatcher
 from app.bot.reporter import Reporter
 from app.config import Config
 from app.core.account_service import AccountService
+from app.core.backup import BackupService
 from app.core.broadcast import Broadcaster
 from app.core.events import EventBus
 from app.core.job_manager import JobManager
@@ -51,6 +52,7 @@ async def run(config: Config) -> None:
     bus: EventBus | None = None
     broadcaster: Broadcaster | None = None
     notifier: NotificationService | None = None
+    backup: BackupService | None = None
     try:
         await db.connect()  # migrations run here
 
@@ -87,6 +89,9 @@ async def run(config: Config) -> None:
         notifier.set_bot(bot)
         notifier.subscribe()
 
+        backup = BackupService(db, config)
+        backup.start_sweeper(bot)
+
         dispatcher = build_dispatcher(
             config=config,
             db=db,
@@ -99,6 +104,7 @@ async def run(config: Config) -> None:
             settings=user_settings,
             broadcaster=broadcaster,
             notifications=notifier,
+            backup=backup,
         )
 
         logger.info("bot polling starting")
@@ -118,6 +124,8 @@ async def run(config: Config) -> None:
             await broadcaster.shutdown()
         if notifier is not None:
             notifier.unsubscribe()
+        if backup is not None:
+            await backup.shutdown()
         if bot is not None:
             await bot.session.close()
         if jobs is not None:

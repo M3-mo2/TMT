@@ -67,8 +67,19 @@ NOTIFY_TOGGLE = f"{PREFIX}:notify:toggle:"
 
 # backups
 BAK = f"{PREFIX}:bak"
+BAK_SETTINGS = f"{PREFIX}:bak:settings"
 BAK_NEW = f"{PREFIX}:bak:new"
 BAK_OPEN = f"{PREFIX}:bak:v:"
+BAK_EXPORT = f"{PREFIX}:bak:export:"
+BAK_RESTORE = f"{PREFIX}:bak:restore:"
+BAK_RESTORE_CONFIRM = f"{PREFIX}:bak:restoreok:"
+BAK_DELETE = f"{PREFIX}:bak:delete:"
+BAK_DELETE_OK = f"{PREFIX}:bak:deleteok:"
+BAK_UPLOAD_START = f"{PREFIX}:bak:upload"
+BAK_TOGGLE = f"{PREFIX}:bak:toggle"
+BAK_INTERVAL = f"{PREFIX}:bak:interval"
+BAK_HISTORY = f"{PREFIX}:bak:history"
+BAK_PAGE = f"{PREFIX}:bak:p:"
 
 # search
 SEARCH = f"{PREFIX}:search"

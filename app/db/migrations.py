@@ -272,6 +272,40 @@ CREATE INDEX idx_notifications_unread ON notifications(owner_id, read_at, dismis
     WHERE read_at IS NULL AND dismissed = 0;
 """
 
+# v11: Backup System — an append-only key/value settings table
+# (``app_settings``) for admin-tunable knobs and a ``backups`` ledger that
+# records every backup archive produced (on-disk path, size, status, when it
+# was sent to an admin).  Both tables use plain ``PRIMARY KEY`` (no
+# AUTOINCREMENT, RULES §6) and standard SQL only — portable to PostgreSQL.
+# The seed INSERTs are idempotent (ON CONFLICT DO UPDATE) so re-running a
+# migration never duplicates default rows.  Settings are read/merged with
+# Config defaults in ``core/backup.py``.
+_V11 = """
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS backups (
+    id INTEGER PRIMARY KEY,
+    filename TEXT NOT NULL,
+    file_size INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    sent_to INTEGER,
+    error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_backups_created ON backups(created_at);
+
+INSERT INTO app_settings (key, value, updated_at) VALUES
+    ('backup_enabled', 'false', datetime('now')),
+    ('backup_interval_hours', '24', datetime('now')),
+    ('backup_chat_id', '', datetime('now'))
+ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
@@ -283,6 +317,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (8, _V8),
     (9, _V9),
     (10, _V10),
+    (11, _V11),
 ]
 
 

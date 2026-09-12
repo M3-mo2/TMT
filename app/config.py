@@ -56,6 +56,11 @@ class Config(BaseSettings):
     notify_on_error: bool = True           # DM admins on FloodWait / PeerFlood / unexpected errors
     notify_on_broadcast_events: bool = True  # DM admins on broadcast lifecycle
 
+    # Backup System — periodic DB snapshots sent to the operator (admin panel).
+    backup_interval_hours: int = Field(default=24, ge=1)      # default periodic interval
+    backup_retention_count: int = Field(default=7, ge=1)      # max on-disk archives kept
+    backup_sweep_interval: int = Field(default=300, ge=15)    # how often the sweeper wakes
+
     @model_validator(mode="after")
     def _normalize(self) -> Config:
         object.__setattr__(self, "data_dir", self.data_dir.expanduser().resolve())
