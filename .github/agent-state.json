@@ -2,7 +2,13 @@
   "task": "Review the entire notification system and produce a comprehensive report of all problems. DO NOT modify or fix any code in the notification system - the sole deliverable is a written report. Scope to read thoroughly: app/core/notifications.py (NotificationService), app/core/events.py (EventBus, SystemEvent, SYSTEM_EVENTS), app/bot/routers/admin/notifications.py (admin inbox UI + pagination + read/dismiss/settings callbacks), and the repositories those call (repo.list_notifications, repo.count_unread_notifications, repo.mark_notification_read, repo.mark_all_notifications_read, repo.dismiss_notification, repo.is_notification_enabled, repo.set_notification_setting, repo.create_notification). Also read docs/notifications/NotificationSystem.md and the DB schema for the notifications table. Produce the report as a new file docs/notifications/ReviewReport.md (Markdown) enumerating every problem - bugs, logic errors, missing guards, edge cases, race conditions, incorrect pagination/offset math, stale unread counts, severity handling in _try_dm (disable_notification), config kill-switch gaps in _config_enabled, DM-delivery failure tracking (delivered flag), fail-open defaults, double-publish risks, error handling, and any admin-panel UI/UX issues. For each problem include: a short summary, the affected file and line, a severity rating, and a concrete suggested fix direction. Add a concise executive summary of findings to the PR description. If a problem is uncertain, flag it as a question/risk rather than a definite bug.",
   "max_cycles": 15,
   "cycle": 0,
-  "status": "building",
+  "status": "clean",
   "findings": [],
-  "history": []
+  "history": [
+    {
+      "agent": "review",
+      "cycle": 0,
+      "result": "clean"
+    }
+  ]
 }
