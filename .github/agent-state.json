@@ -2,9 +2,64 @@
   "task": "I need a periodic backup system that I can manage from the admin panel settings. I want it to automatically send me a copy of the database at set intervals. I also need a backup restore and export section, and it needs to be very flexible and robust—a cohesive system designed correctly, in line with the code, and following best practices. ",
   "max_cycles": 115,
   "cycle": 0,
-  "status": "building",
-  "findings": [],
-  "history": [],
+  "status": "issues_found",
+  "findings": [
+    {
+      "title": "Undefined `_render_settings` helper crashes the backup toggle",
+      "severity": "high",
+      "file": "app/bot/routers/admin/backups.py:140",
+      "detail": "`cb_backup_toggle` calls `await _render_settings(cb, backup)`, but no such function is defined in the module (only `_settings_view` exists, which returns a tuple). Toggling the periodic-backup switch therefore raises NameError at runtime. There are no router-level tests, so this ships unnoticed."
+    },
+    {
+      "title": "On-demand backup / `_make_archive` does not create the `backups/` directory",
+      "severity": "high",
+      "file": "app/core/backup.py:300",
+      "detail": "`_make_archive` writes the archive to `self._dir` (= data_dir/backups) but never creates that directory; only `start_sweeper()` does. On-demand backups (`run_now`) and upload-restore therefore fail with FileNotFoundError. Worse, create_backup only catches `SnapshotError`, so this FileNotFoundError propagates uncaught to the bot callback. Reproduced: 8 service tests fail with FileNotFoundError."
+    },
+    {
+      "title": "Backup record filename is never persisted",
+      "severity": "high",
+      "file": "app/core/backup.py:266-281",
+      "detail": "`insert_backup` is called with filename='' and `update_backup_status` never sets the filename, so every record.filename stays empty. This breaks: `archive_path_for` (export and restore-by-list always return None), `delete_backup` (it unlinks `self._dir / ''` i.e. the backups/ directory, not the .zip, orphaning the archive), and `_prune_retention` (kept_names never matches any real filename, so retention deletes ALL backup-*.zip files every run)."
+    },
+    {
+      "title": "SQLite header validation off-by-one rejects every valid restore",
+      "severity": "high",
+      "file": "app/core/backup.py:412",
+      "detail": "`if header[:15] != b'SQLite format 3\\x00'` compares a 15-byte slice to a 16-byte literal ('SQLite format 3' is 15 chars + NUL = 16 bytes). They can never compare equal, so `_extract_and_validate` always returns None and `restore_from_file` rejects every valid archive as 'invalid_archive', even one produced by the service itself. Verified byte lengths: literal=16, slice=15. Reproduced: test_extract_and_validate_ok fails."
+    },
+    {
+      "title": "Successful restore crashes at the post-success audit after staging dir is deleted",
+      "severity": "medium",
+      "file": "app/core/backup.py:483,498",
+      "detail": "On the success path, `_swap`'s `finally` runs `shutil.rmtree(db_src.parent)` (removing the `_stage/` dir containing db_src), then the success audit calls `db_src.stat().st_size` on the now-deleted file -> FileNotFoundError. Latent today (no test reaches the success audit because bugs #2/#3/#4 block it first), but it will surface once those are fixed."
+    },
+    {
+      "title": "Two service tests await synchronous / non-callable objects",
+      "severity": "low",
+      "file": "tests/test_backup_service.py:139,198",
+      "detail": "`test_create_backup_missing_db_file` does `await service._dir.mkdir(...)` (Path.mkdir is synchronous, so awaiting None raises TypeError) and `test_sweeper_creates_backup_when_due` does `await db.fetch_one` (awaits the method object -> TypeError). Both abort before asserting their intent, so the missing-DB fast-fail and the due-check behavior are never actually validated."
+    },
+    {
+      "title": "No tests for the backup admin router handlers",
+      "severity": "medium",
+      "file": "tests/",
+      "detail": "All tests cover only the db/repo and service layers. The backups.py handlers (toggle, export, restore-from-list, upload-restore, delete) are entirely untested, which is exactly why the router-level defects (#1 toggle NameError; #3 restore/export/delete relying on an empty filename) shipped unnoticed."
+    },
+    {
+      "title": "Router reaches into `backup._db`, bypassing the service abstraction",
+      "severity": "low",
+      "file": "app/bot/routers/admin/backups.py:219,264,300",
+      "detail": "`cb_backup_open` / `cb_backup_delete_confirm` / `cb_backup_restore_prompt` call `repo.get_backup(backup._db, ...)` directly, leaking the service's private DB handle to the bot layer and violating RULES §1 (bot layer should not touch DB internals; use the service). A `BackupService.get_backup(id)` method would keep the boundary clean."
+    }
+  ],
+  "history": [
+    {
+      "agent": "review",
+      "cycle": 0,
+      "result": "issues_found"
+    }
+  ],
   "human_messages": [
     {
       "author": "M3-mo2",
