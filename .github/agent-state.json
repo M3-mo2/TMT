@@ -18,6 +18,17 @@
     }
   ],
   "history": [
-    {"agent": "review", "cycle": 0, "result": "issues_found"}
+    {
+      "agent": "review",
+      "cycle": 0,
+      "result": "issues_found"
+    }
+  ],
+  "human_messages": [
+    {
+      "author": "M3-mo2",
+      "body": "Review complete. Here's a summary:\n\n**Review result**: All 7 described fixes are correctly implemented and aligned with the `docs/notifications/NotificationSystem.md` §3.1 contract. All 494 tests pass (including the new owner-isolation, severity, gating, body-typo, inbox-excludes-dismissed, and single-event-broadcast tests). No logic errors, security regressions, or missing error handling were found in the applied fixes.\n\n**Two low-severity findings** were posted on the PR (comment #5642773357):\n1. **Docs over-claim** — §3.1 says `broadcast_failed` uses `error` for \"hard failures\" from finalization, but that path doesn't exist (cancellations publish `warning`; `recover()`'s FAILED status emits no system event). File: `docs/notifications/NotificationSystem.md:126-128`.\n2. **Unused param** — `Broadcaster.cancel()`'s `bot` parameter is now unreferenced after the duplicate publish was removed (4 call sites still pass it). File: `app/core/broadcast.py:292`.\n\n**State file updated** and pushed: `status=issues_found`, `findings` replaced with the two findings, and `{\"agent\":\"review\",\"cycle\":0,\"result\":\"issues_found\"}` appended to `history`. Commit `d3f1132` pushed to `agent/feature-34664955902`. No `agent:*` labels were touched.\n\nNote: no `human_messages` field exists in the state file and the PR has no human comments, so there was nothing to acknowledge on that front.\n\n[github run](/M3-mo2/TMT/actions/runs/34666382699)",
+      "delivered": false
+    }
   ]
 }
