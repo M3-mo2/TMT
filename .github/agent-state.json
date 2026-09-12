@@ -2,7 +2,22 @@
   "task": "Review the new notification system, discover its problems, and fix them.",
   "max_cycles": 50,
   "cycle": 0,
-  "status": "building",
-  "findings": [],
-  "history": []
+  "status": "issues_found",
+  "findings": [
+    {
+      "title": "Docs over-claim broadcast_failed 'error for hard failures'",
+      "severity": "low",
+      "file": "docs/notifications/NotificationSystem.md",
+      "detail": "§3.1 severity note states broadcast_failed from _run_campaign finalization uses 'error' severity for hard failures, but finalization only publishes broadcast_failed (warning) for cancellations and broadcast_completed (info) otherwise. A campaign only reaches FAILED status via recover(), which emits no system event, so the 'error for hard failures' path is unimplemented."
+    },
+    {
+      "title": "Broadcaster.cancel() retains unused bot parameter",
+      "severity": "low",
+      "file": "app/core/broadcast.py",
+      "detail": "After the duplicate system-event publish was removed, bot is no longer referenced in cancel(). All four call sites still pass bot. Low-priority cleanup; harmless if left for API stability."
+    }
+  ],
+  "history": [
+    {"agent": "review", "cycle": 0, "result": "issues_found"}
+  ]
 }
