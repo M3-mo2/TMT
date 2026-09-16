@@ -1,7 +1,7 @@
 {
   "task": "You are an automated code review/build agent. Explore the ENTIRE TMT codebase in repository M3-mo2/TMT and identify ALL gaps and missing pieces that prevent the project from being complete and production-ready. Categories to investigate: (1) CI/CD pipeline issues — broken workflows, missing automation, BOT_NAME mismatches, failed permission checks, label state-machine gaps; (2) Incomplete features — stubbed/todo/not-implemented functions, partially-built features; (3) Missing documentation — absent README sections, missing guides, absent API docs; (4) Missing or inadequate tests — missing test files for modules, low coverage areas; (5) Configuration/scaffolding gaps — missing setup.py/pyproject, missing requirements, missing .env, missing linting config, missing pre-commit hooks; (6) Code quality defects — TODO/FIXME markers, unused imports, security issues. Produce a single report file named GAPS_REPORT.md at the repository root. The report MUST be organized by category, each gap with a severity (Critical/High/Medium/Low) and a concrete description + file location when possible. Do NOT fix any gaps — only document them. Do NOT modify existing application code. Deliver only the new report file.",
   "max_cycles": 15,
-  "cycle": 0,
+  "cycle": 1,
   "status": "issues_found",
   "findings": [
     {
