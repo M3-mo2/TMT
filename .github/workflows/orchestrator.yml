@@ -180,8 +180,8 @@ jobs:
       - name: 🔐 Check commenter permission
         id: perm
         env:
-          # 👈 استخدام GITHUB_TOKEN الافتراضي
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 👈 التعديل: استخدام PAT_TOKEN بدلاً من GITHUB_TOKEN 
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
         run: |
           PERM=$(gh api "repos/${{ github.repository }}/collaborators/${COMMENT_AUTHOR}/permission" --jq .permission)
