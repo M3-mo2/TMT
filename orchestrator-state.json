@@ -11,6 +11,10 @@
     {
       "pr": 14,
       "note": "BOT_NAME fix (mohamed-AFYU -> M3-mo2), 8 occurrences across opencode.yml + orchestrator.yml"
+    },
+    {
+      "pr": 16,
+      "note": "auto-tracked new build"
     }
   ]
 }
