@@ -187,10 +187,14 @@ async def delete_notification(db, notification_id: int) -> bool:
 
 **Attack scenario:** Notification IDs are sequential integers starting at 1.
 An admin whose own notifications are exhausted can enumerate and mark/dismiss/delete
-notifications belonging to **other admins**. The `users.py` admin router calls
-`mark_notification_read`, `dismiss_notification`, and `delete_notification` —
-verify that the callers pass the correct `owner_id` and that the repo functions
-enforce it.
+notifications belonging to **other admins**. The callers are in
+`app/bot/routers/admin/notifications.py` — `cb_notify_read` (line 77) calls
+`mark_notification_read`, and `cb_notify_dismiss` (line 98) calls `dismiss_notification`.
+Note that `users.py` contains **zero** notification references. The third mutation,
+`delete_notification`, has **no caller anywhere** in the codebase (only its definition
+in `repositories.py:928`) — it is a **latent IDOR**: the function exists with the
+vulnerability but is not currently wired into any UI path. Verify that the callers
+that do exist pass the correct `owner_id` and that the repo functions enforce it.
 
 ### 4.2 Undeclared dependency: `python-dateutil`
 
@@ -258,22 +262,32 @@ The docstring explicitly acknowledges the duplication ("mirrors repositories.now
 RULES §8: "no duplicated business logic. If two modules need the same rule, lift
 it to `core/` or `tg/errors.py`." This should be a single shared utility.
 
-### 5.2 Dead function: `render_bcast_progress`
+### 5.2 Test-covered but not wired into production: `render_bcast_progress`
 
-Defined at `app/bot/texts.py:648` and listed in `__all__` (line 50), but **never
-imported or called anywhere**. The comment at `app/core/broadcast.py:206` says:
+Defined at `app/bot/texts.py:648` and listed in `__all__` (line 50). Contrary to
+the original report, this function is **not dead code** — it is called by the test
+`test_render_bcast_progress` in `tests/test_broadcast_router.py:310` and is live
+and test-covered. However, it is **not wired into the production broadcast path**:
+the comment at `app/core/broadcast.py:206` says:
 
 > "Phase 4 replaces this with a full `render_bcast_progress` in `texts.py`."
 
-But the replacement was never wired up — `broadcast.py` still uses
-`_progress_text()` (line 202, called at line 825). The Phase 4 refactor is
-**half-done**: the new function exists but the old one is still in use.
+But the replacement was never wired up — `broadcast.py` still uses `_progress_text()`
+(line 202, called at line 825). The Phase 4 refactor is **half-done**: the new
+function exists and is tested, but the old `_progress_text()` remains in active
+use. Recommended action: route the production call through `render_bcast_progress`
+(or remove it if `_progress_text()` is preferred) so the two do not diverge.
 
-### 5.3 Dead function: `render_notification_card`
+### 5.3 Test-covered but not wired into production: `render_notification_card`
 
-Defined at `app/bot/texts.py:738` and listed in `__all__` (line 53), but
-**never called**. The notification UI path uses `render_notifications_list`
-instead. Complete dead code.
+Defined at `app/bot/texts.py:738` and listed in `__all__` (line 53). Contrary to
+the original report, this function is **not dead code** — it is called by the test
+`test_render_notification_card` in `tests/test_texts.py:349` and is live and
+test-covered. However, it is **not wired into the production notification UI path**:
+the notification inbox uses `render_notifications_list` instead
+(`app/bot/texts.py`, called from `admin/notifications.py:47`). Recommended action:
+either wire `render_notification_card` into the production single-notification view
+or remove it (and its test) to avoid bitrot.
 
 ### 5.4 Dead variable: `technical` in `errors.py`
 
@@ -389,12 +403,15 @@ are embedded in prose comments, not actionable issue references.
 2. **Fix IDOR in notification mutations** — add `owner_id` parameter to
    `mark_notification_read`, `dismiss_notification`, `delete_notification`
 3. **Fix the `Config` undefined name** in `texts.py:179` — breaks type introspection
-4. **Remove dead code** — `render_bcast_progress`, `render_notification_card`,
-   the duplicated `now_iso`, and the `technical` variable in `errors.py`
-5. **Add `python-dateutil` to `pyproject.toml`** — prevents runtime crash
-6. **Fix the wrong message key** in `errors.py:257` — user-facing correctness
-7. **Add tests for admin routers** — `channels.py` and `users.py` are 500+
-   lines of untested CRUD
+4. **Remove dead code** — the duplicated `now_iso` and the `technical` variable
+   in `errors.py`
+5. **Resolve half-wired functions** — `render_bcast_progress` and
+   `render_notification_card` are test-covered but not wired into production
+   (either complete the wiring or remove them to prevent bitrot)
+6. **Add `python-dateutil` to `pyproject.toml`** — prevents runtime crash
+7. **Fix the wrong message key** in `errors.py:257` — user-facing correctness
+8. **Resolve the emoji policy contradiction** — either strip all emoji from
+   16 files or update RULES §7 with an approved palette
 8. **Resolve the emoji policy contradiction** — either strip all emoji from
    16 files or update RULES §7 with an approved palette
 
