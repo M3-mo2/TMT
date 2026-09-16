@@ -191,10 +191,12 @@ notifications belonging to **other admins**. The callers are in
 `app/bot/routers/admin/notifications.py` — `cb_notify_read` (line 77) calls
 `mark_notification_read`, and `cb_notify_dismiss` (line 98) calls `dismiss_notification`.
 Note that `users.py` contains **zero** notification references. The third mutation,
-`delete_notification`, has **no caller anywhere** in the codebase (only its definition
+`delete_notification`, has **no caller in production code** (only its definition
 in `repositories.py:928`) — it is a **latent IDOR**: the function exists with the
-vulnerability but is not currently wired into any UI path. Verify that the callers
-that do exist pass the correct `owner_id` and that the repo functions enforce it.
+vulnerability but is not currently wired into any UI path. The only caller is in
+`tests/test_notifications.py:230`, which exercises the function directly without
+`owner_id` scoping. Verify that the callers that do exist pass the correct
+`owner_id` and that the repo functions enforce it.
 
 ### 4.2 Undeclared dependency: `python-dateutil`
 
@@ -214,12 +216,12 @@ when an admin uses natural-language scheduling.
 **Severity: Medium** — RULES §2: "New error classes ... never `except Exception: pass`,
 never bare `except:`."
 
-38 occurrences across 17 source files. Highlights:
+48 occurrences across 17 source files. Highlights:
 
 | File | Lines | Context | Defensible? |
 |---|---|---|---|
 | `app/services/helpers.py` | 22, 25, 35 | `safe_edit`, `safe_delete` — error suppression with no logging | **No** — swallows Telegram API errors silently |
-| `app/core/broadcast.py` | 497, 502, 583, 607, 746, 769, 784, 801, 814, 839 | Worker loop, progress card, send retry | Mixed — some should use specific Telethon/aiogram exceptions |
+| `app/core/broadcast.py` | 330, 497, 502, 583, 607, 746, 769, 784, 801, 814, 839 | Worker loop, progress card, send retry | Mixed — some should use specific Telethon/aiogram exceptions |
 | `app/bot/routers/admin/channels.py` | 130 | `entry_ref_entered` — catches all exceptions from `bot.get_chat` | **No** — masks auth failures as "not found" |
 | `app/core/account_service.py` | 150 | Account validation | Mixed |
 | `app/bot/reporter.py` | 108, 132 | Bot notification dispatch | Mixed |
@@ -410,9 +412,9 @@ are embedded in prose comments, not actionable issue references.
    (either complete the wiring or remove them to prevent bitrot)
 6. **Add `python-dateutil` to `pyproject.toml`** — prevents runtime crash
 7. **Fix the wrong message key** in `errors.py:257` — user-facing correctness
-8. **Resolve the emoji policy contradiction** — either strip all emoji from
-   16 files or update RULES §7 with an approved palette
-8. **Resolve the emoji policy contradiction** — either strip all emoji from
+8. **Add tests for admin routers** — `channels.py` (221 lines) and `users.py`
+   (281 lines) are 500+ lines of untested CRUD
+9. **Resolve the emoji policy contradiction** — either strip all emoji from
    16 files or update RULES §7 with an approved palette
 
 > *Note: This report is a gap analysis only. No source code was modified.*
