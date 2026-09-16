@@ -2,7 +2,32 @@
   "task": "You are an automated code review/build agent. Explore the ENTIRE TMT codebase in repository M3-mo2/TMT and identify ALL gaps and missing pieces that prevent the project from being complete and production-ready. Categories to investigate: (1) CI/CD pipeline issues — broken workflows, missing automation, BOT_NAME mismatches, failed permission checks, label state-machine gaps; (2) Incomplete features — stubbed/todo/not-implemented functions, partially-built features; (3) Missing documentation — absent README sections, missing guides, absent API docs; (4) Missing or inadequate tests — missing test files for modules, low coverage areas; (5) Configuration/scaffolding gaps — missing setup.py/pyproject, missing requirements, missing .env, missing linting config, missing pre-commit hooks; (6) Code quality defects — TODO/FIXME markers, unused imports, security issues. Produce a single report file named GAPS_REPORT.md at the repository root. The report MUST be organized by category, each gap with a severity (Critical/High/Medium/Low) and a concrete description + file location when possible. Do NOT fix any gaps — only document them. Do NOT modify existing application code. Deliver only the new report file.",
   "max_cycles": 15,
   "cycle": 0,
-  "status": "building",
-  "findings": [],
-  "history": []
+  "status": "issues_found",
+  "findings": [
+    {
+      "title": "render_bcast_progress falsely reported as dead code",
+      "severity": "Medium",
+      "file": "GAPS_REPORT.md §5.2 / app/bot/texts.py:648",
+      "detail": "Report says render_bcast_progress is 'never imported or called anywhere'; it is called by tests/test_broadcast_router.py:310 inside test_render_bcast_progress. It is live and test-covered, not dead."
+    },
+    {
+      "title": "render_notification_card falsely reported as dead code",
+      "severity": "Medium",
+      "file": "GAPS_REPORT.md §5.3 / app/bot/texts.py:738",
+      "detail": "Report says render_notification_card is 'never called'; it is called by tests/test_texts.py:349 inside test_render_notification_card. Test-covered, not dead."
+    },
+    {
+      "title": "IDOR caller misattributed to users.py",
+      "severity": "Medium",
+      "file": "GAPS_REPORT.md §4.1 / app/bot/routers/admin/notifications.py:77,98",
+      "detail": "Report claims 'users.py admin router calls' the 3 notification mutations. users.py has 0 notification refs; callers are admin/notifications.py:77 (mark_notification_read) and :98 (dismiss_notification); delete_notification has no caller at all."
+    }
+  ],
+  "history": [
+    {
+      "agent": "review",
+      "cycle": 0,
+      "result": "issues_found"
+    }
+  ]
 }
