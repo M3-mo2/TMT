@@ -5,28 +5,10 @@
   "status": "issues_found",
   "findings": [
     {
-      "title": "Duplicate priority #8 in Summary priorities list",
-      "severity": "Medium",
-      "file": "GAPS_REPORT.md §Summary (lines 413-416)",
-      "detail": "The Fix Agent's reorganization of the Summary priorities list introduced a duplicate numbering — two items are both numbered '8' (both 'Resolve the emoji policy contradiction'). The original report had unique priorities 1-8 with only one emoji item. The Fix Agent's comment claims to have 'fixed a resulting duplicate-numbering bug' but the duplicate persists at the end of the list."
-    },
-    {
-      "title": "Missing 'Add tests for admin routers' priority in Summary",
-      "severity": "Medium",
-      "file": "GAPS_REPORT.md §Summary",
-      "detail": "The Fix Agent's reorganization removed the original priority 7 ('Add tests for admin routers — channels.py and users.py are 500+ lines of untested CRUD') without explanation. This was a legitimate High-severity recommendation aligned with §3's finding of 23 untested modules and the entire untested admin router tree. It should be re-added to the priorities list."
-    },
-    {
-      "title": "delete_notification 'no caller anywhere' claim is inaccurate",
+      "title": "§2 'logic bug' claim for keyboards.py:151 is inaccurate — no bug exists",
       "severity": "Low",
-      "file": "GAPS_REPORT.md §4.1 (line 194)",
-      "detail": "The Fix Agent's §4.1 states delete_notification has 'no caller anywhere in the codebase (only its definition in repositories.py:928)'. This is incorrect — tests/test_notifications.py:230 calls repo.delete_notification(db, nid). The broader claim (latent IDOR, no production caller) is correct, but 'no caller anywhere' is too broad and inaccurate."
-    },
-    {
-      "title": "except Exception count is inaccurate",
-      "severity": "Low",
-      "file": "GAPS_REPORT.md §4.3",
-      "detail": "The report states '38 occurrences across 17 source files' for broad except Exception. A grep for 'except Exception' in app/ finds 48 occurrences across 17 files. The file count (17) is correct, but the occurrence count is off by 10."
+      "file": "GAPS_REPORT.md §2 Logic bugs",
+      "detail": "The report claims the else branch f\"  all\" in broadcast_target_kb should show \"✓ all\" (checkmark when \"all\" is NOT the active filter). The code is correct: all 4 buttons (lines 151-154) show a checkmark only on the active filter and dimmed text on inactive ones. No logic bug exists. Acting on this claim would introduce a visual bug. The only real issue is the unnecessary f-string prefix (already flagged by pyflakes)."
     }
   ],
   "history": [
@@ -38,6 +20,11 @@
     {
       "agent": "review",
       "cycle": 1,
+      "result": "issues_found"
+    },
+    {
+      "agent": "review",
+      "cycle": 2,
       "result": "issues_found"
     }
   ],
