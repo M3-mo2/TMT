@@ -113,7 +113,7 @@ jobs:
 
       - name: 🏷️ Ensure the "orchestrator" label exists
         env:
-          # 👈 تم التعديل: استخدام GITHUB_TOKEN الافتراضي لتجنب خطأ 403
+          # 👈 استخدام GITHUB_TOKEN الافتراضي لتجنب خطأ 403
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh label create "${{ env.ORCH_LABEL }}" --color "5319e7" --force
 
@@ -134,7 +134,7 @@ jobs:
 
       - name: 🧵 Ensure the persistent orchestrator issue exists (idempotent)
         env:
-          # 👈 تم التعديل: استخدام GITHUB_TOKEN الافتراضي لتجنب خطأ 403
+          # 👈 استخدام GITHUB_TOKEN الافتراضي لتجنب خطأ 403
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           EXISTING=$(gh issue list --repo "${{ github.repository }}" --label "${{ env.ORCH_LABEL }}" --state open --json number --jq '.[0].number // empty')
@@ -166,11 +166,11 @@ jobs:
     name: 💬 Orchestrator Agent
     # Only fires for comments on the dedicated orchestrator ISSUE (not a PR),
     # never for the bot's own comments (no self-triggering loop).
-    # 👈 تم التعديل: تغيير الشرط ليتجاهل تعليقات البوت الآلي فقط بدلاً من اسم المستخدم
+    # 👈 تم التعديل: تجاهل تعليقات البوت (mohamed-AFYU)
     if: |
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request == null &&
-      github.event.comment.user.login != 'github-actions[bot]' &&
+      github.event.comment.user.login != 'mohamed-AFYU' &&
       contains(github.event.issue.labels.*.name, 'orchestrator')
     runs-on: ubuntu-latest
     concurrency:
@@ -180,7 +180,7 @@ jobs:
       - name: 🔐 Check commenter permission
         id: perm
         env:
-          # 👈 تم التعديل: استخدام GITHUB_TOKEN الافتراضي
+          # 👈 استخدام GITHUB_TOKEN الافتراضي
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
         run: |
@@ -207,7 +207,7 @@ jobs:
         id: bootstrap_check
         if: steps.perm.outputs.allowed == 'true'
         env:
-          # 👈 تم التعديل: استخدام GITHUB_TOKEN الافتراضي
+          # 👈 استخدام GITHUB_TOKEN الافتراضي
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if git ls-remote --exit-code --heads origin "${{ env.DATA_BRANCH }}" > /dev/null 2>&1; then
@@ -344,11 +344,11 @@ jobs:
   # ============================================================================
   track_new_builds:
     name: 🏗️ Track new pipeline PR
-    # 👈 تم التعديل: استخدام github-actions[bot] لضمان التعرف على البوت بغض النظر عن التوكن المستخدم
+    # 👈 تم التعديل: استخدام اسم البوت mohamed-AFYU
     if: |
       github.event_name == 'pull_request' &&
       github.event.action == 'opened' &&
-      (github.event.pull_request.user.login == 'github-actions[bot]' || github.event.pull_request.user.login == 'mohamed-AFYU')
+      github.event.pull_request.user.login == 'mohamed-AFYU'
     runs-on: ubuntu-latest
     concurrency:
       group: orchestrator-data-write
@@ -366,7 +366,7 @@ jobs:
 
       - name: 📌 Track this PR + notify the orchestrator issue
         env:
-          # 👈 تم التعديل: استخدام GITHUB_TOKEN الافتراضي لتجنب خطأ 403
+          # 👈 استخدام GITHUB_TOKEN الافتراضي
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR=${{ github.event.pull_request.number }}
@@ -412,11 +412,11 @@ jobs:
     # Only for comments made BY the bot on a PR (the pipeline agents reporting
     # in), never for human comments on PRs — those are the pipeline's own
     # "chat" job's job (see opencode.yml), not this one's.
-    # 👈 تم التعديل: استخدام github-actions[bot] لضمان التعرف على البوت
+    # 👈 تم التعديل: استخدام اسم البوت mohamed-AFYU
     if: |
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request != null &&
-      (github.event.comment.user.login == 'github-actions[bot]' || github.event.comment.user.login == 'mohamed-AFYU')
+      github.event.comment.user.login == 'mohamed-AFYU'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -426,7 +426,7 @@ jobs:
 
       - name: 🔔 Relay if this PR is delegated
         env:
-          # 👈 تم التعديل: استخدام GITHUB_TOKEN الافتراضي لتجنب خطأ 403
+          # 👈 استخدام GITHUB_TOKEN الافتراضي
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR=${{ github.event.issue.number }}
