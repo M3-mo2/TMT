@@ -24,6 +24,11 @@
       "agent": "review",
       "cycle": 3,
       "result": "clean"
+    },
+    {
+      "agent": "verify",
+      "cycle": 3,
+      "result": "clean"
     }
   ],
   "human_messages": []
