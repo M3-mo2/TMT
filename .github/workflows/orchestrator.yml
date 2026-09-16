@@ -86,7 +86,7 @@ permissions:
   actions: write
 
 env:
-  BOT_NAME: "mohamed-AFYU" # ⚠️ لازم يكون نفس القيمة الموجودة في opencode.yml
+  BOT_NAME: "M3-mo2" # ⚠️ لازم يكون نفس القيمة الموجودة في opencode.yml
   PIPELINE_WORKFLOW: "opencode.yml"
   DATA_BRANCH: "orchestrator-data"
   STATE_FILE: "orchestrator-state.json"
@@ -170,7 +170,7 @@ jobs:
     if: |
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request == null &&
-      github.event.comment.user.login != 'mohamed-AFYU' &&
+      github.event.comment.user.login != 'M3-mo2' &&
       contains(github.event.issue.labels.*.name, 'orchestrator')
     runs-on: ubuntu-latest
     concurrency:
@@ -348,7 +348,7 @@ jobs:
     if: |
       github.event_name == 'pull_request' &&
       github.event.action == 'opened' &&
-      github.event.pull_request.user.login == 'mohamed-AFYU'
+      github.event.pull_request.user.login == 'M3-mo2'
     runs-on: ubuntu-latest
     concurrency:
       group: orchestrator-data-write
@@ -416,7 +416,7 @@ jobs:
     if: |
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request != null &&
-      github.event.comment.user.login == 'mohamed-AFYU'
+      github.event.comment.user.login == 'M3-mo2'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
