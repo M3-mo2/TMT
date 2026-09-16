@@ -85,7 +85,8 @@ simply not enforced.
 | File | Line | Issue |
 |---|---|---|
 | `app/tg/errors.py` | 257 | `LoginFailure("PASSWORD_REQUIRED", login_message("CODE_EMPTY"))` — the `PASSWORD_REQUIRED` failure uses the **wrong message key** (`CODE_EMPTY`). Users entering a 2FA password that fails will see the "Enter the code" message instead. |
-| `app/bot/routers/admin/keyboards.py` | 151 | `f"✓ {filters.target}"` when target is `"all"`, else `f"  all"` — the else branch should say `"✓ all"` (currently shows blank space + "all" with no checkmark), breaking the visual consistency of the target filter UI. |
+
+> **Note on `keyboards.py:151`:** The original report flagged this as a logic bug — the else branch `f"  all"` was said to "should show `✓ all`." This is **not a bug**: the code correctly shows a checkmark only when `filters.target == "all"` and dims the button (`  all`) when "all" is the *inactive* option. This matches the identical pattern on lines 152–154 for "active", "inactive", "blocked". The only real issue on lines 151–154 is the unnecessary `f""` prefix on string literals with no placeholders, which is already captured in the §2 pyflakes table above. Acting on the "fix" suggestion would *introduce* a visual bug (checkmark on an inactive filter).
 
 ---
 
