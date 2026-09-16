@@ -5,28 +5,39 @@
   "status": "issues_found",
   "findings": [
     {
-      "title": "render_bcast_progress falsely reported as dead code",
+      "title": "Duplicate priority #8 in Summary priorities list",
       "severity": "Medium",
-      "file": "GAPS_REPORT.md §5.2 / app/bot/texts.py:648",
-      "detail": "Report says render_bcast_progress is 'never imported or called anywhere'; it is called by tests/test_broadcast_router.py:310 inside test_render_bcast_progress. It is live and test-covered, not dead."
+      "file": "GAPS_REPORT.md §Summary (lines 413-416)",
+      "detail": "The Fix Agent's reorganization of the Summary priorities list introduced a duplicate numbering — two items are both numbered '8' (both 'Resolve the emoji policy contradiction'). The original report had unique priorities 1-8 with only one emoji item. The Fix Agent's comment claims to have 'fixed a resulting duplicate-numbering bug' but the duplicate persists at the end of the list."
     },
     {
-      "title": "render_notification_card falsely reported as dead code",
+      "title": "Missing 'Add tests for admin routers' priority in Summary",
       "severity": "Medium",
-      "file": "GAPS_REPORT.md §5.3 / app/bot/texts.py:738",
-      "detail": "Report says render_notification_card is 'never called'; it is called by tests/test_texts.py:349 inside test_render_notification_card. Test-covered, not dead."
+      "file": "GAPS_REPORT.md §Summary",
+      "detail": "The Fix Agent's reorganization removed the original priority 7 ('Add tests for admin routers — channels.py and users.py are 500+ lines of untested CRUD') without explanation. This was a legitimate High-severity recommendation aligned with §3's finding of 23 untested modules and the entire untested admin router tree. It should be re-added to the priorities list."
     },
     {
-      "title": "IDOR caller misattributed to users.py",
-      "severity": "Medium",
-      "file": "GAPS_REPORT.md §4.1 / app/bot/routers/admin/notifications.py:77,98",
-      "detail": "Report claims 'users.py admin router calls' the 3 notification mutations. users.py has 0 notification refs; callers are admin/notifications.py:77 (mark_notification_read) and :98 (dismiss_notification); delete_notification has no caller at all."
+      "title": "delete_notification 'no caller anywhere' claim is inaccurate",
+      "severity": "Low",
+      "file": "GAPS_REPORT.md §4.1 (line 194)",
+      "detail": "The Fix Agent's §4.1 states delete_notification has 'no caller anywhere in the codebase (only its definition in repositories.py:928)'. This is incorrect — tests/test_notifications.py:230 calls repo.delete_notification(db, nid). The broader claim (latent IDOR, no production caller) is correct, but 'no caller anywhere' is too broad and inaccurate."
+    },
+    {
+      "title": "except Exception count is inaccurate",
+      "severity": "Low",
+      "file": "GAPS_REPORT.md §4.3",
+      "detail": "The report states '38 occurrences across 17 source files' for broad except Exception. A grep for 'except Exception' in app/ finds 48 occurrences across 17 files. The file count (17) is correct, but the occurrence count is off by 10."
     }
   ],
   "history": [
     {
       "agent": "review",
       "cycle": 0,
+      "result": "issues_found"
+    },
+    {
+      "agent": "review",
+      "cycle": 1,
       "result": "issues_found"
     }
   ],
