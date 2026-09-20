@@ -1,35 +1,8 @@
 {
-  "task": "You are an automated code review/build agent. Explore the ENTIRE TMT codebase in repository M3-mo2/TMT and identify ALL gaps and missing pieces that prevent the project from being complete and production-ready. Categories to investigate: (1) CI/CD pipeline issues — broken workflows, missing automation, BOT_NAME mismatches, failed permission checks, label state-machine gaps; (2) Incomplete features — stubbed/todo/not-implemented functions, partially-built features; (3) Missing documentation — absent README sections, missing guides, absent API docs; (4) Missing or inadequate tests — missing test files for modules, low coverage areas; (5) Configuration/scaffolding gaps — missing setup.py/pyproject, missing requirements, missing .env, missing linting config, missing pre-commit hooks; (6) Code quality defects — TODO/FIXME markers, unused imports, security issues. Produce a single report file named GAPS_REPORT.md at the repository root. The report MUST be organized by category, each gap with a severity (Critical/High/Medium/Low) and a concrete description + file location when possible. Do NOT fix any gaps — only document them. Do NOT modify existing application code. Deliver only the new report file.",
+  "task": "Build a new 'Ticket' management subsystem for the TMT Telegram bot repository. The Ticket system lets users (and admins) create and track support tickets, with technical support delivered through the Telegram bot itself. Requirements:\n\n1. **Ticket model and lifecycle**: A Ticket has an ID, title, description, status (open / in-progress / resolved / closed), priority (low / medium / high / urgent), assignee, creator, timestamps, and a list of messages/comments. Users create tickets by chatting with the bot; admins manage them from a dedicated admin panel.\n\n2. **Bot-driven technical support**: The Telegram bot acts as the support interface. Users can open a ticket via a bot command (e.g. /new_ticket), attach text/photos, and receive bot replies. The bot posts status transitions and agent replies back to the user's private chat. Anomaly detection: when a ticket hasn't been touched for more than 24h, or when a 'FloodWait'/'error' pattern appears in logs, the bot escalates and notifies admins in a support channel.\n\n3. **Admin panel**: A smooth, flexible, responsive web-based admin panel (use the existing frontend tooling if present, otherwise build a lightweight standalone one). The panel supports: listing, filtering, searching tickets (by status, priority, assignee, keyword), viewing a single ticket with full conversation thread, assigning tickets to agents, changing status/priority, posting internal notes and customer-visible replies, and viewing anomaly/escalation events. Include a dashboard with ticket statistics (counts by status/priority, response times, escalation rate).\n\n4. **Data layer**: Use SQLite (the project already uses SQLite for TMT). Create migrations for a 'tickets' table and a 'ticket_messages' table. Reuse the existing app/db layer patterns (aiosqlite repositories). Add a security/crypto layer if storing any sensitive data, reusing the existing Fernet-based encryption pattern from app/security/crypto.py.\n\n5. **Anomaly handling**: Define an Anomaly model and a handler. Anomalies are detected from ticket events (stale tickets, repeated ticket creation from same user, FloodWait errors, unhandled exceptions). The bot notifies admins and can auto-transition ticket status. Expose anomalies in the admin panel for review.\n\n6. **Integration with existing TMT bot**: The Ticket system should live alongside the existing Telegram Member Transfer functionality. The bot routes /new_ticket and /tickets commands to the new Ticket subsystem. The existing transfer flow is untouched.\n\n7. **Code quality**: Follow the existing RULES.md conventions. Add tests in tests/ matching the existing test framework. Add appropriate migrations under app/db/migrations. Ensure the code is async and uses aiogram 3 + Telethon patterns where relevant.\n\n8. **Documentation**: Add a section to README.md or a new docs/ page describing the Ticket system, how to set it up, and how users interact with it via the bot.",
   "max_cycles": 15,
-  "cycle": 3,
-  "status": "clean",
+  "cycle": 0,
+  "status": "building",
   "findings": [],
-  "history": [
-    {
-      "agent": "review",
-      "cycle": 0,
-      "result": "issues_found"
-    },
-    {
-      "agent": "review",
-      "cycle": 1,
-      "result": "issues_found"
-    },
-    {
-      "agent": "review",
-      "cycle": 2,
-      "result": "issues_found"
-    },
-    {
-      "agent": "review",
-      "cycle": 3,
-      "result": "clean"
-    },
-    {
-      "agent": "verify",
-      "cycle": 3,
-      "result": "clean"
-    }
-  ],
-  "human_messages": []
+  "history": []
 }
