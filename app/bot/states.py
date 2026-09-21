@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from aiogram.fsm.state import State, StatesGroup
 
-__all__ = ["AddAccountFSM", "TransferFSM", "SettingsFSM"]
+__all__ = ["AddAccountFSM", "TransferFSM", "SettingsFSM", "TicketFSM"]
 
 
 class AddAccountFSM(StatesGroup):
@@ -21,3 +21,11 @@ class TransferFSM(StatesGroup):
 
 class SettingsFSM(StatesGroup):
     value = State()
+
+
+class TicketFSM(StatesGroup):
+    create_subject = State()
+    create_body = State()
+    create_confirm = State()
+    reply_body = State()
+    reply_confirm = State()

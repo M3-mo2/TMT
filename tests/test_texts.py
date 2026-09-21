@@ -23,7 +23,7 @@ _EMOJI = re.compile(
     "\U0000FE00-\U0000FE0F\U0000200D\U00002B00-\U00002BFF\U0001F900-\U0001F9FF]"
 )
 
-_ALLOWED_SYMBOLS = set("✓!?×›=•#—…|←👤🔰💳✅✨↓⇐―⇜⤾𑗁📱≡📚🔐⤸⋆⟡↢🏷")
+_ALLOWED_SYMBOLS = set("✓!?×›=•#—…|←👤🔰💳✅✨↓⇐―⇜⤾𑗁📱≡📚🔐⤸⋆⟡↢🏷🎫")
 
 
 def _iter_public_strings() -> list[str]:
@@ -37,7 +37,7 @@ def _iter_public_strings() -> list[str]:
 
 def test_no_emoji_in_any_exported_string() -> None:
     # Strip approved decorative symbols before checking for stray emoji.
-    _APPROVED = "👤🔰💳✅✨📚🔐🏷"
+    _APPROVED = "👤🔰💳✅✨📚🔐🏷🎫"
     for value in _iter_public_strings():
         stripped = "".join(ch for ch in value if ch not in _APPROVED)
         assert not _EMOJI.search(stripped), f"emoji found in {value!r}"
@@ -364,3 +364,143 @@ def test_render_notify_settings_shows_all_types() -> None:
     assert "job_completed" in rendered
     # Enabled ones marked ✓, disabled marked ×
     assert "✓" in rendered
+
+
+# ---------------------------------------------------------------- tickets
+
+
+def test_ticket_status_labels_arabic() -> None:
+    assert texts.ticket_status_label("open") == "مفتوحة"
+    assert texts.ticket_status_label("in_progress") == "قيد المعالجة"
+    assert texts.ticket_status_label("resolved") == "تم الحل"
+    assert texts.ticket_status_label("closed") == "مغلقة"
+    assert texts.ticket_status_label("unknown") == "unknown"  # fallback
+
+
+def test_ticket_priority_labels_arabic() -> None:
+    assert texts.ticket_priority_label("low") == "منخفضة"
+    assert texts.ticket_priority_label("normal") == "عادية"
+    assert texts.ticket_priority_label("high") == "عالية"
+    assert texts.ticket_priority_label("unknown") == "unknown"
+
+
+def test_ticket_status_glyphs() -> None:
+    assert texts.ticket_status_glyph("open") == texts.GLYPH_PASS
+    assert texts.ticket_status_glyph("in_progress") == texts.GLYPH_INFO
+    assert texts.ticket_status_glyph("resolved") == texts.GLYPH_PASS
+    assert texts.ticket_status_glyph("closed") == texts.GLYPH_NEUTRAL
+    assert texts.ticket_status_glyph("unknown") == texts.GLYPH_UNKNOWN
+
+
+def test_render_tickets_list_empty() -> None:
+    rendered = texts.render_tickets_list([])
+    assert texts.M_TICKETS_EMPTY in rendered
+    assert "🎫" in rendered
+
+
+def test_render_tickets_list_with_items() -> None:
+    tickets = [
+        {"id": 1, "subject": "Bug <x>", "priority": "high", "status": "open"},
+        {"id": 2, "subject": "Feature", "priority": "low", "status": "in_progress"},
+    ]
+    rendered = texts.render_tickets_list(tickets)
+    assert "#1" in rendered
+    assert "#2" in rendered
+    assert "Bug &lt;x&gt;" in rendered  # escaped
+    assert "Feature" in rendered
+    assert texts.ticket_status_label("open") in rendered
+    assert texts.ticket_status_label("in_progress") in rendered
+    assert texts.ticket_priority_label("high") in rendered
+    assert texts.ticket_priority_label("low") in rendered
+
+
+def test_render_ticket_detail_with_messages() -> None:
+    ticket = {"id": 1, "subject": "Test <sub>", "priority": "normal", "status": "open"}
+    messages = [
+        {"sender_role": "user", "body": "Hello <admin>"},
+        {"sender_role": "admin", "body": "Hi there <user>"},
+    ]
+    rendered = texts.render_ticket_detail(ticket, messages)
+    assert "#1" in rendered
+    assert "Test &lt;sub&gt;" in rendered
+    assert "Hello &lt;admin&gt;" in rendered
+    assert "Hi there &lt;user&gt;" in rendered
+    assert texts.ticket_status_label("open") in rendered
+    assert texts.ticket_priority_label("normal") in rendered
+
+
+def test_render_ticket_detail_empty_thread() -> None:
+    ticket = {"id": 1, "subject": "New", "priority": "high", "status": "open"}
+    rendered = texts.render_ticket_detail(ticket, [])
+    assert "#1" in rendered
+    assert "لا توجد رسائل" in rendered
+
+
+def test_render_ticket_card() -> None:
+    ticket = {"id": 5, "subject": "Bug", "priority": "high", "status": "closed", "owner_id": 42}
+    card = texts.render_ticket_card(ticket)
+    assert "#5" in card
+    assert "Bug" in card
+    assert str(42) in card
+    assert texts.ticket_status_label("closed") in card
+    assert texts.ticket_priority_label("high") in card
+
+
+def test_render_admin_tickets_list_empty() -> None:
+    rendered = texts.render_admin_tickets_list([], status_filter=None)
+    assert "لا توجد تذاكر" in rendered
+
+
+def test_render_admin_tickets_list_with_items() -> None:
+    tickets = [
+        {"id": 1, "subject": "Ticket <one>", "priority": "low", "status": "open", "owner_id": 10},
+    ]
+    rendered = texts.render_admin_tickets_list(tickets, status_filter=None)
+    assert "#1" in rendered
+    assert "Ticket &lt;one&gt;" in rendered
+    assert str(10) in rendered
+
+
+def test_main_menu_has_tickets_button() -> None:
+    from app.bot.keyboards import main_menu
+    kb = main_menu()
+    flat = [b.text for row in kb.inline_keyboard for b in row]
+    assert texts.BUT_TICKETS in flat
+
+
+def test_tickets_list_kb_structure() -> None:
+    from app.bot.callbacks import TicketCB, MenuCB
+    from app.bot.keyboards import tickets_list_kb
+    tickets = [{"id": 1}, {"id": 2}]
+    kb = tickets_list_kb(tickets)
+    flat = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert TicketCB(action="view", ticket_id=1).pack() in flat
+    assert TicketCB(action="view", ticket_id=2).pack() in flat
+    assert TicketCB(action="create").pack() in flat
+    assert MenuCB(action="main").pack() in flat
+
+
+def test_ticket_detail_kb_has_back() -> None:
+    from app.bot.callbacks import TicketCB
+    from app.bot.keyboards import ticket_detail_kb
+    kb = ticket_detail_kb(42)
+    flat = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert TicketCB(action="back", ticket_id=42).pack() in flat
+
+
+def test_ticket_confirm_create_kb() -> None:
+    from app.bot.callbacks import TicketCB
+    from app.bot.keyboards import ticket_confirm_create_kb
+    kb = ticket_confirm_create_kb()
+    flat = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert TicketCB(action="confirm_create").pack() in flat
+    assert TicketCB(action="back").pack() in flat
+
+
+def test_ticket_confirm_reply_kb() -> None:
+    from app.bot.callbacks import TicketCB
+    from app.bot.keyboards import ticket_confirm_reply_kb
+    kb = ticket_confirm_reply_kb(7)
+    flat = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert TicketCB(action="confirm_reply", ticket_id=7).pack() in flat
+    assert TicketCB(action="back", ticket_id=7).pack() in flat

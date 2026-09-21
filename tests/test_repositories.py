@@ -335,3 +335,124 @@ async def test_audit_writes_rows(db: Database) -> None:
     assert row["job_id"] == 7
     assert json.loads(row["detail"]) == {"x": 1}
     assert row["ts"]
+
+
+# ---------------------------------------------------------------- tickets
+
+
+async def add_ticket_owner(db: Database, owner_id: int = 1) -> None:
+    await repo.upsert_user(db, owner_id)
+
+
+async def test_create_ticket_defaults(db: Database) -> None:
+    await add_ticket_owner(db, 1)
+    ticket_id = await repo.create_ticket(db, owner_id=1, subject="Support request")
+    assert ticket_id > 0
+    row = await db.fetch_one(
+        "SELECT owner_id, subject, priority, status FROM tickets WHERE id=?",
+        (ticket_id,),
+    )
+    assert row is not None
+    assert row["owner_id"] == 1
+    assert row["subject"] == "Support request"
+    assert row["priority"] == "normal"
+    assert row["status"] == "open"
+
+
+async def test_create_ticket_custom_priority(db: Database) -> None:
+    await add_ticket_owner(db, 1)
+    ticket_id = await repo.create_ticket(db, owner_id=1, subject="Urgent", priority="high")
+    row = await db.fetch_one("SELECT priority FROM tickets WHERE id=?", (ticket_id,))
+    assert row is not None
+    assert row["priority"] == "high"
+
+
+async def test_list_user_tickets_scoped_and_ordered(db: Database) -> None:
+    await add_ticket_owner(db, 1)
+    await add_ticket_owner(db, 2)
+    t1 = await repo.create_ticket(db, owner_id=1, subject="T1")
+    t2 = await repo.create_ticket(db, owner_id=1, subject="T2")
+    t3 = await repo.create_ticket(db, owner_id=2, subject="T3")
+    mine = await repo.list_user_tickets(db, 1)
+    assert [t["id"] for t in mine] == [t2, t1]  # newest first, own only
+    other = await repo.list_user_tickets(db, 2)
+    assert [t["id"] for t in other] == [t3]
+
+
+async def test_list_all_tickets_status_filter(db: Database) -> None:
+    await add_ticket_owner(db, 1)
+    await add_ticket_owner(db, 2)
+    t1 = await repo.create_ticket(db, owner_id=1, subject="T1")  # open
+    t2 = await repo.create_ticket(db, owner_id=2, subject="T2")  # open
+    await repo.update_ticket_status(db, t1, "closed")
+    all_tickets = await repo.list_all_tickets(db)
+    assert len(all_tickets) == 2
+    open_tickets = await repo.list_all_tickets(db, status_filter="open")
+    assert [t["id"] for t in open_tickets] == [t2]
+    closed_tickets = await repo.list_all_tickets(db, status_filter="closed")
+    assert [t["id"] for t in closed_tickets] == [t1]
+
+
+async def test_get_ticket_owner_scoping(db: Database) -> None:
+    await add_ticket_owner(db, 1)
+    await add_ticket_owner(db, 2)
+    ticket_id = await repo.create_ticket(db, owner_id=1, subject="Mine")
+    # owner can see their ticket
+    assert await repo.get_ticket(db, ticket_id, owner_id=1) is not None
+    # different owner cannot see it
+    assert await repo.get_ticket(db, ticket_id, owner_id=2) is None
+    # admin (owner_id=None) can see any ticket
+    assert await repo.get_ticket(db, ticket_id, owner_id=None) is not None
+
+
+async def test_get_ticket_missing(db: Database) -> None:
+    assert await repo.get_ticket(db, 999, owner_id=None) is None
+    assert await repo.get_ticket(db, 999, owner_id=1) is None
+
+
+async def test_ticket_message_lifecycle(db: Database) -> None:
+    await add_ticket_owner(db, 1)
+    ticket_id = await repo.create_ticket(db, owner_id=1, subject="Test")
+    msg_id = await repo.create_ticket_message(
+        db, ticket_id=ticket_id, sender_id=1, sender_role="user", body="Hello?"
+    )
+    assert msg_id > 0
+    msgs = await repo.list_ticket_messages(db, ticket_id)
+    assert len(msgs) == 1
+    assert msgs[0]["body"] == "Hello?"
+    assert msgs[0]["sender_role"] == "user"
+    assert msgs[0]["sender_id"] == 1
+    await repo.create_ticket_message(
+        db, ticket_id=ticket_id, sender_id=999, sender_role="admin", body="Hi there"
+    )
+    msgs = await repo.list_ticket_messages(db, ticket_id)
+    assert len(msgs) == 2
+    assert msgs[1]["sender_role"] == "admin"
+    assert msgs[1]["sender_id"] == 999
+
+
+async def test_update_ticket_status_and_priority(db: Database) -> None:
+    await add_ticket_owner(db, 1)
+    ticket_id = await repo.create_ticket(db, owner_id=1, subject="Test")
+    await repo.update_ticket_status(db, ticket_id, "in_progress")
+    await repo.update_ticket_priority(db, ticket_id, "high")
+    row = await db.fetch_one("SELECT status, priority FROM tickets WHERE id=?", (ticket_id,))
+    assert row is not None
+    assert row["status"] == "in_progress"
+    assert row["priority"] == "high"
+
+
+async def test_set_ticket_updated_bumps_timestamp(db: Database) -> None:
+    await add_ticket_owner(db, 1)
+    ticket_id = await repo.create_ticket(db, owner_id=1, subject="Test")
+    # Force a known old timestamp so the test is deterministic within 1s precision
+    await db.execute(
+        "UPDATE tickets SET updated_at='2000-01-01T00:00:00Z' WHERE id=?",
+        (ticket_id,),
+    )
+    await repo.create_ticket_message(
+        db, ticket_id=ticket_id, sender_id=1, sender_role="user", body="msg"
+    )
+    row = await db.fetch_one("SELECT updated_at FROM tickets WHERE id=?", (ticket_id,))
+    assert row is not None
+    assert row["updated_at"] != "2000-01-01T00:00:00Z"

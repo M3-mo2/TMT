@@ -962,3 +962,128 @@ async def is_notification_enabled(
     if row is None:
         return True
     return bool(row["enabled"])
+
+
+# ---------------------------------------------------------------- tickets
+
+
+async def create_ticket(
+    db: Database,
+    *,
+    owner_id: int,
+    subject: str,
+    priority: str = "normal",
+) -> int:
+    """Insert a new ticket row and return its id."""
+    ts = now_iso()
+    return await db.execute(
+        "INSERT INTO tickets (owner_id, subject, priority, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, 'open', ?, ?)",
+        (owner_id, subject, priority, ts, ts),
+    )
+
+
+async def list_user_tickets(db: Database, owner_id: int) -> list[dict[str, Any]]:
+    """Return the user's tickets, newest first."""
+    rows = await db.fetch_all(
+        "SELECT id, owner_id, subject, priority, status, created_at, updated_at "
+        "FROM tickets WHERE owner_id=? ORDER BY id DESC",
+        (owner_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+async def list_all_tickets(
+    db: Database, status_filter: str | None = None
+) -> list[dict[str, Any]]:
+    """Admin-only: all tickets, optionally filtered by status, newest first."""
+    if status_filter is None:
+        rows = await db.fetch_all(
+            "SELECT id, owner_id, subject, priority, status, created_at, updated_at "
+            "FROM tickets ORDER BY id DESC"
+        )
+    else:
+        rows = await db.fetch_all(
+            "SELECT id, owner_id, subject, priority, status, created_at, updated_at "
+            "FROM tickets WHERE status=? ORDER BY id DESC",
+            (status_filter,),
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_ticket(
+    db: Database,
+    ticket_id: int,
+    owner_id: int | None = None,
+) -> dict[str, Any] | None:
+    """Fetch a ticket row.
+
+    When ``owner_id`` is provided (user path) the row must additionally match
+    that owner — enforcing owner scoping at the SQL layer (RULES §4).  When
+    ``owner_id`` is ``None`` (admin path) any ticket may be fetched."""
+    if owner_id is None:
+        row = await db.fetch_one(
+            "SELECT id, owner_id, subject, priority, status, created_at, updated_at "
+            "FROM tickets WHERE id=?",
+            (ticket_id,),
+        )
+    else:
+        row = await db.fetch_one(
+            "SELECT id, owner_id, subject, priority, status, created_at, updated_at "
+            "FROM tickets WHERE id=? AND owner_id=?",
+            (ticket_id, owner_id),
+        )
+    return dict(row) if row else None
+
+
+async def create_ticket_message(
+    db: Database,
+    *,
+    ticket_id: int,
+    sender_id: int,
+    sender_role: str,
+    body: str,
+) -> int:
+    """Append a message to a ticket thread and return its id."""
+    ts = now_iso()
+    msg_id = await db.execute(
+        "INSERT INTO ticket_messages (ticket_id, sender_id, sender_role, body, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (ticket_id, sender_id, sender_role, body, ts),
+    )
+    await set_ticket_updated(db, ticket_id)
+    return msg_id
+
+
+async def list_ticket_messages(db: Database, ticket_id: int) -> list[dict[str, Any]]:
+    """Return all messages for a ticket, oldest first."""
+    rows = await db.fetch_all(
+        "SELECT id, ticket_id, sender_id, sender_role, body, created_at "
+        "FROM ticket_messages WHERE ticket_id=? ORDER BY id ASC",
+        (ticket_id,),
+    )
+    return [dict(r) for r in rows]
+
+
+async def update_ticket_status(db: Database, ticket_id: int, status: str) -> None:
+    """Set the ticket's lifecycle status and bump ``updated_at``."""
+    await db.execute(
+        "UPDATE tickets SET status=?, updated_at=? WHERE id=?",
+        (status, now_iso(), ticket_id),
+    )
+
+
+async def update_ticket_priority(db: Database, ticket_id: int, priority: str) -> None:
+    """Set the ticket's priority and bump ``updated_at``."""
+    await db.execute(
+        "UPDATE tickets SET priority=?, updated_at=? WHERE id=?",
+        (priority, now_iso(), ticket_id),
+    )
+
+
+async def set_ticket_updated(db: Database, ticket_id: int) -> None:
+    """Bump ``updated_at`` on a ticket (called after a new message)."""
+    await db.execute(
+        "UPDATE tickets SET updated_at=? WHERE id=?",
+        (now_iso(), ticket_id),
+    )

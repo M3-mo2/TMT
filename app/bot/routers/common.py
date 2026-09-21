@@ -10,7 +10,7 @@ import logging
 from aiogram import Bot, Router, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, ReplyKeyboardMarkup
 
 from app.bot.callbacks import GateCB, MenuCB
 from app.bot.gate import check_membership
@@ -38,7 +38,7 @@ router = Router(name="common")
 
 
 async def edit_or_answer(
-    query: CallbackQuery, text: str, reply_markup: InlineKeyboardMarkup | None = None
+    query: CallbackQuery, text: str, reply_markup: InlineKeyboardMarkup | ReplyKeyboardMarkup | None = None
 ) -> None:
     """Edit the callback's message, falling back to a callback answer when the
     message is inaccessible or unchanged (double-tap / refresh)."""
