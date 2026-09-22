@@ -53,6 +53,15 @@ __all__ = [
     "render_notification_card", "render_notifications_list",
     "notification_event_label", "notification_severity_label",
     "render_notify_settings",
+    "backup_status_label", "render_backup_dashboard",
+    "render_backup_card", "render_backup_list",
+    "M_BACKUP_NEW_LABEL", "M_BACKUP_PROMP", "M_BACKUP_NOW",
+    "M_BACKUP_SCHEDULE", "M_BACKUP_SCHEDULED", "M_BACKUP_SCHEDULE_PROMPT",
+    "M_BACKUP_DONE", "M_BACKUP_RUNNING_MSG", "M_BACKUP_CANCELLED",
+    "M_BACKUP_CANNOT_CANCEL", "M_BACKUP_NOT_FOUND", "M_BACKUP_NO_FILE",
+    "M_BACKUP_NO_RUN_FILE", "M_BACKUP_EMPTY", "M_BACKUP_RESTORE_CONFIRM",
+    "M_BACKUP_RESTORED", "M_BACKUP_RUNNOW_RESUMED", "M_BACKUP_BAD_STATUS",
+    "M_BACKUP_INVALID_ID",
 ]
 
 # ---------------------------------------------------------------- decorations
@@ -690,6 +699,119 @@ def render_bcast_summary(campaign: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------- backups
+
+
+_BACKUP_STATUS_VIEW: dict[str, tuple[str, str]] = {
+    "pending": (GLYPH_INFO, "معلق"),
+    "scheduled": (GLYPH_INFO, "مجدولة"),
+    "running": (GLYPH_INFO, "جارية"),
+    "completed": (GLYPH_PASS, "مكتملة"),
+    "failed": (GLYPH_FAIL, "فاشلة"),
+    "cancelled": (GLYPH_NEUTRAL, "ملغاة"),
+}
+
+
+def backup_status_label(status: str) -> str:
+    glyph, label = _BACKUP_STATUS_VIEW.get(status, (GLYPH_WARN, status))
+    return f"{glyph} {label}"
+
+
+def _fmt_size(n: int) -> str:
+    """Human-readable byte size in Arabic-locale friendly form."""
+    if n <= 0:
+        return "—"
+    units = ["ب", "كب", "مب", "جب"]
+    i = 0
+    val = float(n)
+    while val >= 1024 and i < len(units) - 1:
+        val /= 1024.0
+        i += 1
+    return f"{val:.1f} {units[i]}" if i > 0 else f"{int(val)} {units[i]}"
+
+
+def render_backup_dashboard(counts: dict[str, int]) -> str:
+    """Admin backup dashboard: headline + per-status counts + hint."""
+    lines = ["⟡ لوحة النسخ الاحتياطية"]
+    lines.append("")
+    for status in ("pending", "scheduled", "running", "completed", "failed", "cancelled"):
+        n = counts.get(status, 0) or 0
+        lines.append(f"{backup_status_label(status)} ↼ <code>{n}</code>")
+    lines.append("")
+    lines.append("⟡ الإجمالي ↼ <code>{total}</code>".format(total=sum(counts.values())))
+    lines.append("")
+    lines.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(lines)
+
+
+def render_backup_card(backup: dict[str, Any]) -> str:
+    """Single backup detail card (mirror of render_bcast_summary)."""
+    glyph, status_label = _BACKUP_STATUS_VIEW.get(
+        backup.get("status", ""), (GLYPH_WARN, backup.get("status", ""))
+    )
+    rows = [
+        f"<b>⟡ النسخة <code>#{backup.get('id', '?')}</code></b>",
+        "",
+        f"› العنوان ↼ <code>{esc(backup.get('label') or 'بدون عنوان')}</code>",
+        f"{glyph} الحالة ↼ <code>{status_label}</code>",
+        f"› النوع ↼ <code>{esc(backup.get('kind') or 'manual')}</code>",
+    ]
+    if backup.get("scheduled_for"):
+        rows.append(f"› موعد ↼ <code>{esc(backup['scheduled_for'])}</code>")
+    if backup.get("created_by"):
+        rows.append(f"› أنشئ بواسطة ↼ <code>{backup['created_by']}</code>")
+    rows.append(f"› أنشئت ↼ <code>{esc(backup.get('created_at') or '')}</code>")
+    if backup.get("started_at"):
+        rows.append(f"› بدأت ↼ <code>{esc(backup['started_at'])}</code>")
+    if backup.get("finished_at"):
+        rows.append(f"› انتهت ↼ <code>{esc(backup['finished_at'])}</code>")
+    if backup.get("file_path"):
+        rows.append(f"› الملف ↼ <code>{esc(backup['file_path'])}</code>")
+    if backup.get("size_bytes"):
+        rows.append(f"› الحجم ↼ <code>{_fmt_size(int(backup['size_bytes']))}</code>")
+    if backup.get("error"):
+        rows.append(f"› السبب ↼ {esc(backup['error'])}")
+    rows.append("")
+    rows.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(rows)
+
+
+def render_backup_list(
+    backups: list[dict[str, Any]], page: int, total_pages: int
+) -> str:
+    """Paginated list of backups (mirrors the broadcast history listing)."""
+    lines = ["⟡ النسخ الاحتياطية:"]
+    if not backups:
+        lines.append("× لا توجد نسخ حسب الفلتر.")
+    else:
+        for b in backups:
+            lines.append(f"› {_format_backup_line(b)}")
+    lines.append("")
+    lines.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(lines)
+
+
+M_BACKUP_NEW_LABEL = "⟡ أرسل اسماً توضيحياً للنسخة الاحتياطية.\nسيستخدم الاسم في اسم الملف."
+M_BACKUP_PROMP = "⟡ النسخة: <code>{label}</code>\n› اختر: الآن للنسخ الفوري، أو جدولة للموعد اللاحق."
+M_BACKUP_NOW = "⟡ تشغيل نسخة الآن..."
+M_BACKUP_SCHEDULE = "⟡ جدّق النسخة."
+M_BACKUP_SCHEDULE_PROMPT = "⟡ أرسل موعد الجدولة (مثال: غداً 20:00 أو +2h أو ISO):"
+M_BACKUP_SCHEDULED = "⟡ تم جدولة النسخة <code>#{bid}</code> في <code>{when}</code>."
+M_BACKUP_DONE = "⟡ النسخة <code>#{bid}</code> اكتملت.{detail}"
+M_BACKUP_RUNNING_MSG = "⟡ النسخة <code>#{bid}</code> جارية الآن."
+M_BACKUP_CANCELLED = "أُلغيت النسخة الاحتياطية <code>#{bid}</code>."
+M_BACKUP_CANNOT_CANCEL = "× لا يمكن إلغاء النسخة في حالتها الحالية."
+M_BACKUP_NOT_FOUND = "× النسخة الاحتياطية غير موجودة."
+M_BACKUP_NO_FILE = "× ملف النسخة غير موجود على القرص."
+M_BACKUP_NO_RUN_FILE = "× لا يمكن الاستعادة: النسخة غير مكتملة أو الملف مفقود."
+M_BACKUP_EMPTY = "× لا توجد نسخ احتياطية بعد."
+M_BACKUP_INVALID_ID = "× معرف النسخة غير صالح."
+M_BACKUP_RESTORE_CONFIRM = "⟡ استعادة <code>#{bid}</code>؟\nسيستبدل البيانات الحالية ببيانات هذه النسخة. تأكيد؟"
+M_BACKUP_RESTORED = "⟡ تم استعادة <code>#{bid}</code>. تم استبدال قاعدة البيانات بالحية."
+M_BACKUP_RUNNOW_RESUMED = "⟡ تشغيل <code>#{bid}</code> الآن."
+M_BACKUP_BAD_STATUS = "× الحالة غير مناسبة للاستعادة (تحتاج مكتملة)."
+
+
 # ---------------------------------------------------------------- notifications
 
 
@@ -714,6 +836,12 @@ _NOTIFY_EVENT_LABELS: dict[str, str] = {
     "broadcast_started": "بدأ البث",
     "broadcast_completed": "اكتمل البث",
     "broadcast_failed": "فشل أو ألغي البث",
+    "backup_started": "بدأ النسخ الاحتياطي",
+    "backup_completed": "اكتمل النسخ الاحتياطي",
+    "backup_failed": "فشل النسخ الاحتياطي",
+    "backup_scheduled": "جدولة نسخة احتياطية",
+    "backup_cancelled": "إلغاء نسخة احتياطية",
+    "backup_restored": "استعادة نسخة احتياطية",
     "flood_wait": "FloodWait",
     "peer_flood": "PeerFlood",
 }

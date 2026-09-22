@@ -45,6 +45,11 @@ class Database:
             raise RuntimeError("Database is not connected")
         return self._conn
 
+    @property
+    def path(self) -> Path:
+        """Absolute path of the SQLite database file this connection wraps."""
+        return self._path
+
     @asynccontextmanager
     async def tx(self) -> AsyncIterator[aiosqlite.Connection]:
         """Explicit immediate transaction: commit on success, rollback on error."""

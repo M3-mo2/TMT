@@ -146,6 +146,8 @@ class NotificationService:
             "broadcast_failed",
         ):
             return self._config.notify_on_broadcast_events
+        if event_type.startswith("backup_"):
+            return self._config.notify_on_backup_events
         # account_added, account_removed, account_unauthorized — always on
         # (these are security-relevant and small in volume)
         return True

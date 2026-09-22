@@ -116,6 +116,12 @@ SYSTEM_EVENTS: frozenset[str] = frozenset(
         "broadcast_started",    # an admin broadcast campaign began
         "broadcast_completed",  # a broadcast campaign finished
         "broadcast_failed",     # a broadcast campaign failed
+        "backup_started",       # a backup snapshot began running
+        "backup_completed",     # a backup snapshot finished successfully
+        "backup_failed",        # a backup snapshot failed
+        "backup_scheduled",     # a backup was scheduled for a future time
+        "backup_cancelled",     # a backup was cancelled by the admin
+        "backup_restored",      # an admin restored a backup over the live DB
         "flood_wait",           # a FloodWait was hit (rate-limit alert)
         "peer_flood",           # an account was PeerFlood-limited
     }

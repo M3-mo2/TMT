@@ -1,10 +1,12 @@
 """Admin keyboards — builder functions returning InlineKeyboardMarkup."""
 from __future__ import annotations
 
+from typing import Any
+
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.bot.routers.admin import callbacks as C
 from app.core.broadcast_models import AudienceFilter
-from app.bot.texts import esc as _esc, user_full_name
+from app.bot.texts import esc as _esc, user_full_name, backup_status_label
 
 
 def _btn(text: str, data: str) -> InlineKeyboardButton:
@@ -23,11 +25,14 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
                 _btn("📊 الإحصاءات", C.STATS),
                 _btn("📢 البث", C.BCAST),
             ],
+             [
+                 _btn("🔔 الإشعارات", C.NOTIFY),
+             ],
             [
-                _btn("🔔 الإشعارات", C.NOTIFY),
+                _btn("💾 النسخ الاحتياطية", C.BAK),
             ],
             [
-                _btn("⚙️ الإعدادات", C.SETTINGS),
+                 _btn("⚙️ الإعدادات", C.SETTINGS),
             ],
         ]
     )
@@ -262,3 +267,84 @@ def notify_settings_kb(admin_id: int) -> InlineKeyboardMarkup:
     rows.append([_btn("✓ All Read", C.NOTIFY_MARK_ALL)])
     rows.append([_btn("› رجوع", C.MENU)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------- backups
+
+
+# Backup statuses eligible for a per-row "run now" (resume) button.
+_BACKUP_RESUMABLE = frozenset({"pending", "scheduled", "failed", "cancelled"})
+# Backup statuses eligible for a per-row "cancel" button.
+_BACKUP_CANCELABLE = frozenset({"pending", "scheduled"})
+
+
+def backups_menu_kb() -> InlineKeyboardMarkup:
+    """Backup dashboard sub-menu."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("⟡ إنشاء نسخة", C.BAK_NEW)],
+            [_btn("⏰ جدولة", C.BAK_NEW)],
+            [_btn("› عرض المكتملة", f"{C.BAK_PAGE}0")],
+            [_btn("› رجوع", C.MENU)],
+        ]
+    )
+
+
+def backups_list_kb(
+    backups: list[dict[str, Any]], page: int, total_pages: int
+) -> InlineKeyboardMarkup:
+    """Paginated backup rows with status-gated cancel/run-now per row.
+
+    Each row shows an ``› #id (status)`` opener; a ``× إلغاء`` button is
+    appended when the backup is pending/scheduled, and a ``▶ تشغيل الآن``
+    button when it is pending/scheduled/failed/cancelled (resumable)."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for b in backups:
+        row: list[InlineKeyboardButton] = [
+            _btn(
+                f"› #{b['id']} ({backup_status_label(b['status'])[1:]})",
+                f"{C.BAK_OPEN}{b['id']}",
+            )
+        ]
+        status = b["status"]
+        if status in _BACKUP_CANCELABLE:
+            row.append(_btn("× إلغاء", f"{C.BAK_CANCEL}{b['id']}"))
+        if status in _BACKUP_RESUMABLE:
+            row.append(_btn("▶ تشغيل الآن", f"{C.BAK_RUN_NOW}{b['id']}"))
+        rows.append(row)
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(_btn("← السابق", f"{C.BAK_PAGE}{page - 1}"))
+    if page < total_pages - 1:
+        nav.append(_btn("التالي →", f"{C.BAK_PAGE}{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([_btn("› رجوع", C.BAK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def backup_detail_kb(backup: dict[str, Any]) -> InlineKeyboardMarkup:
+    """Status-gated controls for a single backup's detail card."""
+    bid = backup["id"]
+    status = backup["status"]
+    has_file = bool(backup.get("file_path"))
+    row: list[InlineKeyboardButton] = []
+    if status == "completed" and has_file:
+        row.append(_btn("⟡ استعادة", f"{C.BAK_RESTORE}{bid}"))
+    if status in _BACKUP_RESUMABLE:
+        row.append(_btn("▶ تشغيل الآن", f"{C.BAK_RUN_NOW}{bid}"))
+    if status in _BACKUP_CANCELABLE:
+        row.append(_btn("× إلغاء", f"{C.BAK_CANCEL}{bid}"))
+    rows = [row] if row else []
+    rows.append([_btn("› رجوع", C.BAK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def restore_confirm_kb(backup_id: int) -> InlineKeyboardMarkup:
+    """Confirm/restore prompt for an in-place DB restore."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_btn("✅ تأكيد الاستعادة", f"{C.BAK_RESTORE_OK}{backup_id}")],
+            [_btn("× إلغاء", f"{C.BAK_OPEN}{backup_id}")],
+        ]
+    )
