@@ -108,6 +108,11 @@ on:
     types: [labeled]
   issue_comment:
     types: [created]
+  schedule:
+    # Safety net independent of any single run: catches a bot-authored PR that ended up with no
+    # pipeline label at all, no matter which stage dropped it (a crashed runner, a step that never
+    # got added yet, etc.) — not just the specific Build handoff the in-job safety net above covers.
+    - cron: "*/30 * * * *"
 
 permissions:
   contents: write
@@ -197,7 +202,17 @@ jobs:
             YOU ARE ON BRANCH: ${{ steps.branch.outputs.branch }}
 
             YOUR JOB:
-            1. Inspect the repository and understand its architecture and conventions before writing any code.
+            1. Inspect the repository BEFORE deciding anything: read the actual directory structure and at
+               least one existing feature end-to-end (whichever existing command/handler/flow is closest in
+               kind to what's being asked) to see how it's wired together. Your design for the new feature
+               MUST reuse the same interface layer, storage mechanism, and conventions already in this repo.
+               Never introduce a new interface (a web panel, a REST API, a new bot-command style, a new
+               database engine, etc.) that isn't already how this project works, even if the task text uses
+               generic words like "system", "admin panel", or "dashboard" — those words describe an OUTCOME
+               the human wants, not an architecture; the EXISTING CODE decides the architecture, not the
+               wording of the request. If the task is genuinely ambiguous about WHAT to build (not how),
+               pick the most conservative reading that fits how existing features are exposed to users, and
+               say so explicitly in your PR comment (step 6) rather than guessing silently.
             2. Implement the requested feature/fix completely and correctly on this branch.
             3. Run any available build/lint/test commands and fix what you can before finishing.
             4. Commit your work with clear messages.
@@ -206,15 +221,60 @@ jobs:
                - PR description MUST include a "## Pipeline" section explaining this PR is managed by an
                  automated multi-agent pipeline (Build → Review → Fix → Verify → Decision), and that a human
                  will get a final merge confirmation prompt once everything passes.
-            6. Post ONE comment on the PR starting with the header "### 🏗️ Build Agent" summarizing what you
-               built, key decisions, and anything you were unsure about.
-            7. Add the label "agent:review" to the PR to hand off to the Review Agent.
+            6. Post ONE comment on the PR starting with the header "### 🏗️ Build Agent", in plain Markdown
+               only (never leave raw tool-call/function-call syntax in it — a human reads this comment), with
+               these sections in order:
+               - "**Existing patterns I followed:**" — name the actual files/modules you modeled this on.
+               - "**What I built:**" — a summary of what you built.
+               - "**Assumptions I made:**" — anything genuinely ambiguous in the task and how you resolved it.
+               This comment is how the human catches a misunderstanding early — write it for that purpose,
+               not as a generic changelog.
+            7. Add the label "agent:review" to the PR to hand off to the Review Agent. THIS STEP IS
+               MANDATORY AND MUST BE THE LAST THING YOU DO. The entire pipeline is inert until this label
+               exists — do not end your turn without having added it AND re-read the PR's labels to confirm
+               it is actually there. (A deterministic safety-net step also runs after you and will add it if
+               you forget — but that is a fallback for a mistake, not a substitute for doing this yourself.)
 
             RULES:
             - Do NOT add or remove any other pipeline label ("agent:fix", "agent:verify", "agent:decision",
               "agent:blocked"). Routing beyond this first handoff is handled by the workflow itself.
             - Do NOT merge anything.
             - Never fake a passing test or a successful build.
+
+      - name: 🛟 Safety net — recover a dropped handoff
+        # An LLM finishing its main task and forgetting the bookkeeping tail (opening the PR, or
+        # opening it but skipping the final label) is an observed failure mode, not a hypothetical
+        # one — it's exactly what silently stalled a real build before this step existed. Recover
+        # deterministically instead of the feature going missing with no signal to the human.
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          BRANCH="${{ steps.branch.outputs.branch }}"
+
+          if [ -z "$BRANCH" ]; then
+            echo "❌ No branch name recorded — the branch-creation step itself never completed." >&2
+            exit 1
+          fi
+
+          PR=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+
+          if [ -z "$PR" ]; then
+            echo "❌ No open PR found for branch $BRANCH — the Build Agent likely never pushed/opened one." >&2
+            exit 1
+          fi
+
+          HAS_PIPELINE_LABEL=$(gh pr view "$PR" --repo "${{ github.repository }}" --json labels --jq \
+            '[.labels[].name] | any(. == "agent:review" or . == "agent:fix" or . == "agent:verify" or . == "agent:decision" or . == "agent:blocked" or . == "agent:merged" or . == "agent:closed-by-human")')
+
+          if [ "$HAS_PIPELINE_LABEL" != "true" ]; then
+            echo "⚠️ PR #$PR has no pipeline label — Build Agent forgot the handoff. Adding agent:review."
+            gh pr edit "$PR" --repo "${{ github.repository }}" --add-label "agent:review"
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body "### 🛟 Pipeline safety net
+          The Build Agent finished the implementation but didn't hand this PR off (no \`agent:*\` label was
+          present). I've added \`agent:review\` automatically so the Review → Fix → Verify → Decision loop
+          continues normally."
+          fi
 
   # ============================================================================
   # STAGE 0b — RESUME REVIEW (re-review/re-fix an EXISTING branch or PR)
@@ -404,6 +464,10 @@ jobs:
             RULES:
             - Do NOT add or remove any "agent:*" label yourself — the workflow does this automatically based
               on the state file you just wrote.
+            - Ground every claim about pipeline history in what .github/agent-state.json's "history" array
+              actually contains. Never say a stage was "skipped", "not needed", or similar unless you can
+              point to the specific entry that shows it — that phrasing describes something this pipeline
+              does not do.
 
       - name: 🧭 Route based on review result
         env:
@@ -523,12 +587,15 @@ jobs:
                question, change direction, implement a specific request) in addition to the review findings.
                If a message conflicts with a review finding, the human's message wins — they're the one paying
                attention right now.
-            2. Fix EVERY finding listed. Do not introduce unrelated changes. Run relevant tests/build/lint after
-               fixing and confirm they actually pass. Never fake a passing test.
+            2. Fix EVERY finding listed. Do not introduce unrelated changes, and do not introduce a new
+               interface, storage mechanism, or pattern the rest of this codebase doesn't already use — match
+               what's already there. Run relevant tests/build/lint after fixing and confirm they actually
+               pass. Never fake a passing test.
 
             OUTPUT:
             1. Commit and push your fixes to this branch.
-            2. Post ONE PR comment starting with header "### 🛠️ Fix Agent — Cycle <current cycle>" explaining
+            2. Post ONE PR comment, in plain Markdown only (never raw tool-call/function-call syntax — a
+               human reads this), starting with header "### 🛠️ Fix Agent — Cycle <current cycle>" explaining
                what you changed for each finding, AND a short reply to each undelivered human message you saw
                (quote or paraphrase what they asked, then say what you did about it).
             3. Do NOT edit .github/agent-state.json and do NOT touch any "agent:*" label — the workflow hands
@@ -607,6 +674,9 @@ jobs:
             3. Check "human_messages" in the state file for any entry with "delivered": false and briefly
                acknowledge it in your comment (only the Fix Agent can act on code-change requests from it).
             4. Do NOT modify code.
+            5. Ground every claim in this comment in what you actually ran and actually read in
+               .github/agent-state.json's "history" — never say an earlier stage was "skipped" or "not
+               needed" unless a specific history entry proves it.
 
             OUTPUT (do both):
             1. Post ONE PR comment starting with header "### ✅ Verify Agent" with a summary of the real
@@ -867,3 +937,35 @@ jobs:
         run: |
           PR=${{ github.event.issue.number }}
           gh pr comment "$PR" --repo "${{ github.repository }}" --body "ℹ️ This PR's pipeline already finished (merged or closed) — I'm not picking up new instructions here. Start a new run with workflow_dispatch if you'd like more changes."
+
+  # ============================================================================
+  # STAGE 8 — RECONCILE (scheduled safety net, independent of any single run)
+  # ============================================================================
+  # Runs every 30 minutes regardless of what else is happening. Finds any OPEN PR authored by the
+  # bot that has no "agent:*" label at all — meaning some handoff was dropped, by any stage, for any
+  # reason (an LLM forgetting its last step, a runner crashing mid-job, etc.) — and recovers it the
+  # same way the in-job safety net in the Build stage does. That in-job step only covers the moment
+  # right after Build; this job is the general backstop so a PR can never go silently missing.
+  reconcile:
+    name: 🩺 Reconcile stalled PRs
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🩺 Find bot PRs with no pipeline label and recover them
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          PRS=$(gh pr list --repo "${{ github.repository }}" --author "${{ env.BOT_NAME }}" --state open --json number --jq '.[].number')
+
+          for PR in $PRS; do
+            HAS_PIPELINE_LABEL=$(gh pr view "$PR" --repo "${{ github.repository }}" --json labels --jq \
+              '[.labels[].name] | any(. == "agent:review" or . == "agent:fix" or . == "agent:verify" or . == "agent:decision" or . == "agent:blocked" or . == "agent:merged" or . == "agent:closed-by-human")')
+
+            if [ "$HAS_PIPELINE_LABEL" != "true" ]; then
+              echo "⚠️ PR #$PR has no pipeline label — recovering."
+              gh pr edit "$PR" --repo "${{ github.repository }}" --add-label "agent:review"
+              gh pr comment "$PR" --repo "${{ github.repository }}" --body "### 🩺 Reconciliation
+          This PR was open with no pipeline label on it — a handoff was dropped somewhere along the way. I've
+          added \`agent:review\` to resume the Review → Fix → Verify → Decision loop automatically."
+            fi
+          done
