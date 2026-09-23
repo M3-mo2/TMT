@@ -104,6 +104,11 @@ on:
         required: false
         default: ""
         type: string
+      origin_issue:
+        description: "Internal — orchestrator issue number this request came from (leave empty for manual runs)"
+        required: false
+        default: ""
+        type: string
   pull_request:
     types: [labeled]
   issue_comment:
@@ -177,10 +182,11 @@ jobs:
         env:
           TASK_PROMPT: ${{ inputs.prompt }}
           MAX_CYCLES: ${{ inputs.max_cycles }}
+          ORIGIN_ISSUE: ${{ inputs.origin_issue }}
         run: |
           mkdir -p "$(dirname "$STATE_FILE")"
-          jq -n --arg task "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" \
-            '{task:$task, max_cycles:$maxc, cycle:0, status:"building", findings:[], history:[]}' \
+          jq -n --arg task "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" --arg origin "$ORIGIN_ISSUE" \
+            '{task:$task, max_cycles:$maxc, cycle:0, status:"building", findings:[], history:[], origin_issue:$origin}' \
             > "$STATE_FILE"
           git add "$STATE_FILE"
           git commit -m "chore(pipeline): init state"
@@ -340,6 +346,7 @@ jobs:
           TASK_PROMPT: ${{ inputs.prompt }}
           MAX_CYCLES: ${{ inputs.max_cycles }}
           ACTOR: ${{ github.actor }}
+          ORIGIN_ISSUE: ${{ inputs.origin_issue }}
         run: |
           BRANCH=$(git branch --show-current)
           mkdir -p "$(dirname "$STATE_FILE")"
@@ -348,17 +355,20 @@ jobs:
             if [ -f "$STATE_FILE" ]; then
               # Already pipeline-managed: keep history, restart the cycle counter,
               # and record the new instruction so Review/Fix can see exactly what
-              # was asked for this round.
-              jq --arg author "$ACTOR" --arg body "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" \
+              # was asked for this round. Only overwrite origin_issue if this resume
+              # actually came from an orchestrator conversation (non-empty) — a
+              # manual workflow_dispatch run shouldn't silently unset existing routing.
+              jq --arg author "$ACTOR" --arg body "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" --arg origin "$ORIGIN_ISSUE" \
                 '.cycle = 0
                  | .max_cycles = $maxc
                  | .status = "building"
+                 | (if $origin != "" then .origin_issue = $origin else . end)
                  | .human_messages = ((.human_messages // []) + [{"author":$author,"body":$body,"delivered":false}])' \
                 "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
             else
               # Ad-hoc branch/PR the pipeline never touched before: initialize fresh.
-              jq -n --arg task "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" \
-                '{task:$task, max_cycles:$maxc, cycle:0, status:"building", findings:[], history:[], human_messages:[]}' \
+              jq -n --arg task "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" --arg origin "$ORIGIN_ISSUE" \
+                '{task:$task, max_cycles:$maxc, cycle:0, status:"building", findings:[], history:[], human_messages:[], origin_issue:$origin}' \
                 > "$STATE_FILE"
             fi
           }
