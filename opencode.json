@@ -6,8 +6,8 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "9Router",
       "options": {
-        "baseURL": "https://9router-production-71a5.up.railway.app/v1",
-        "apiKey": "sk-084c27a5187832e3-viako1-cbf6542d"
+        "baseURL": "https://9router-production-e942.up.railway.app/v1",
+        "apiKey": "sk-7a039ee533e70fc1-a96nzn-7ae9bf05"
       },
       "models": {
         "kc/poolside/laguna-s-2.1:free": {
