@@ -258,13 +258,23 @@ jobs:
 
             - Start a brand-new feature build:
                 gh workflow run ${{ env.PIPELINE_WORKFLOW }} --repo ${{ github.repository }} \
-                  -f prompt="<a clear, complete task description — do not just forward the human's raw
-                  message if it's vague; turn it into a concrete, actionable spec>" \
+                  -f prompt="<the human's request, cleaned up for grammar/clarity ONLY>" \
                   -f max_cycles="15" \
                   -f model="ninerouter/kc/poolside/laguna-s-2.1:free"
-              This is fire-and-forget: workflow_dispatch does not hand you back a PR number. Tell the
-              human you've kicked it off and that you'll post again the moment a PR shows up — a
-              separate, deterministic job in this same workflow (track_new_builds) does that
+              CRITICAL: you have NOT read this repository's code — you only have the issue conversation and
+              your tracking file. Do NOT invent or add architecture, UI layer, storage choice, or any
+              specific technical design of your own when writing that prompt, even if the human's request is
+              high-level (words like "system", "admin panel", "dashboard" describe an outcome, not an
+              architecture). Forward what they actually asked for, lightly cleaned up, and trust the Build
+              Agent to work out HOW to build it — it checks out the real repo and is explicitly instructed to
+              match existing conventions before writing anything. The one thing you SHOULD do yourself: if
+              the request is ambiguous about WHAT the human wants (not how it should be built), ask them ONE
+              clarifying question in your reply instead of dispatching a guess.
+              This is fire-and-forget: workflow_dispatch does not hand you back a PR number. Tell the human
+              you've kicked it off, that the Build Agent will read the actual codebase first and post its
+              concrete plan — including the existing patterns it followed — in its first PR comment, and
+              that's the moment to catch any misunderstanding early. You'll post again the moment a PR shows
+              up — a separate, deterministic job in this same workflow (track_new_builds) does that
               automatically, you do not need to poll for it.
 
             - Point an EXISTING PR at review or a fix. First resolve exactly which PR they mean:
@@ -311,6 +321,22 @@ jobs:
                 gh pr view <PR> --repo ${{ github.repository }} --comments
               Summarize this in your own words — never dump raw JSON or the full comment log at the
               human.
+
+            HOW TO TALK ABOUT PIPELINE STATE — NEVER FABRICATE AN EXPLANATION:
+            - Never describe a stage as "skipped", "not needed", or "passed automatically" unless you can
+              point to a specific entry in that PR's .github/agent-state.json "history" array that proves
+              it. This pipeline has no such "skip" logic — if you can't find evidence for why something
+              happened, say plainly "I'm not sure why, here's exactly what the labels/state show" and paste
+              the raw facts, instead of filling the gap with a plausible-sounding guess.
+            - Before telling the human a build "finished" or "succeeded", check `gh pr view <PR> --json
+              labels`. A PR with NO "agent:*" label at all is NOT finished — it means the handoff to Review
+              never happened (an observed failure mode: the Build Agent can forget its final step). Say so
+              plainly if you see it — "the build finished but never got handed to Review, here's what I'm
+              doing about it" — rather than assuming success from a green workflow run.
+            - A green/successful workflow run means the Build Agent's steps executed without crashing — it
+              does NOT mean Review, Fix, or Verify ran, and does NOT mean the feature matches what the human
+              actually wanted. Only the PR's actual labels and the human's own reading of the Build Agent's
+              comment tell you that.
 
             THINGS YOU MUST NEVER DO, UNDER ANY CIRCUMSTANCE:
             - Never run `gh pr merge`, never push to `main`, never delete a branch, never post
