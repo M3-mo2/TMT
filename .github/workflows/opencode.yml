@@ -1,297 +1,132 @@
 # ==============================================================================
-# 🤖 AUTONOMOUS MULTI-AGENT PIPELINE
+# 🧠 ORCHESTRATOR — persistent conversational manager for the agent pipeline
 # ==============================================================================
 #
-# FLOW:
-#   workflow_dispatch (you type a feature request)
-#        │
-#        ├─── "target" input EMPTY ──▶ [BUILD] → creates branch + PR, implements the
-#        │                              feature, labels PR "agent:review"
-#        │
-#        └─── "target" input SET (PR #, branch name, or its tree URL) ──▶
-#              [RESUME REVIEW] → skips branch/PR creation, resets the cycle counter
-#              on that EXISTING PR, records your "prompt" text as the new
-#              instruction, and jumps straight to "agent:review"
-#        │
-#        ▼
-#   [REVIEW] ⇄ [FIX]   (loops until clean, or until the safety ceiling is hit)
-#        │
-#        ▼  (once review is clean)
-#   [VERIFY]  → independently re-runs build/tests, does NOT trust Review's verdict
-#        │            ↳ if Verify finds new problems, it routes back into [FIX] too
-#        ▼  (once verify is clean)
-#   [DECISION] → posts a comment asking you: "/merge yes" or "/merge no"
-#        │
-#        ▼
-#   [MERGE GATE] → checks the commenter has write/admin access, then merges (or not)
+# WHAT THIS IS:
+#   A second, separate workflow from "🤖 Multi-Agent Feature Pipeline"
+#   (.github/workflows/opencode.yml). That pipeline is a deterministic state
+#   machine (Build → Review ⇄ Fix → Verify → Decision) that only reacts to
+#   labels and one exact "/merge yes|no" command.
 #
-#   [CHAT] (side channel, any time) → any PR comment that is NOT "/merge yes"/"/merge no"
-#          is treated as a free-form instruction/question to the pipeline, gated by the
-#          SAME write/admin permission check as merge_gate:
-#            - if the pipeline is paused (agent:blocked or agent:decision), the comment
-#              is recorded and the PR is routed straight to [FIX], which reads it, replies
-#              to it in its own PR comment, applies any requested code change, then hands
-#              back to [REVIEW] automatically — resuming the normal loop.
-#            - if the pipeline is mid-cycle (review/fix/verify actively running), the
-#              comment is just recorded; whichever agent runs next reads it and replies.
-#            - if the PR's pipeline already finished (agent:merged / agent:closed-by-human),
-#              the commenter gets a one-line notice instead of silence.
+#   This workflow is different ON PURPOSE: it's a smart, free-form manager you
+#   talk to in plain language, in one or more persistent GitHub Issues (each
+#   labeled "orchestrator"). You can have as many of these conversations open
+#   at once as you like — see MULTIPLE CONVERSATIONS below. Every time you
+#   comment on one, it reads that issue's whole thread + a small shared
+#   tracking file, decides what you're asking for, and delegates using the
+#   EXACT SAME surface a human collaborator has: adding "agent:*" labels to
+#   PRs, triggering the pipeline's workflow_dispatch for brand-new features,
+#   and commenting. It never writes application code and never merges
+#   anything itself.
 #
-# STATE MACHINE:
-#   All routing between stages is done via PR labels (not by scanning comment text),
-#   because label events cannot be accidentally re-triggered by an agent quoting a
-#   keyword in its own reply. Labels used: agent:review, agent:fix, agent:verify,
-#   agent:decision, agent:blocked, agent:merged, agent:closed-by-human.
+# MULTIPLE CONVERSATIONS:
+#   Open a new one whenever you want, with no Actions-tab step required: just
+#   open any GitHub issue and add the "orchestrator" label to it. The
+#   `open_conversation` job activates it immediately, and from then on it
+#   behaves exactly like any other orchestrator issue — its own history, its
+#   own tracked PRs. A shared tracking file (orchestrator-state.json) records
+#   which issue delegated which PR (the "issue" field on each entry), so
+#   updates for a PR always relay back to the conversation that actually
+#   asked for it, never to a different one. Re-running Bootstrap also still
+#   works and creates a fresh conversation issue each time, if you'd rather
+#   use the Actions tab.
 #
-#   Label swapping + cycle counting is done by plain bash/jq steps AFTER each LLM
-#   agent runs — never by the LLM itself. This keeps the loop-prevention logic
-#   100% deterministic and not dependent on the model "remembering" to behave.
+# WHERE THE CONVERSATION ACTUALLY LIVES:
+#   The transcript itself is NOT duplicated into a file — each GitHub Issue's
+#   own comment thread already IS that conversation's persistent transcript
+#   (`gh issue view --comments` reads it fresh every turn, so nothing is ever
+#   lost or has to be manually saved). What IS kept in a small shared file is
+#   which PRs are currently being tracked and which issue each one belongs to,
+#   so incoming "### 🔍 Review Agent" / "### 🛠️ Fix Agent" / etc. comments get
+#   relayed into the right conversation. That file — orchestrator-state.json —
+#   lives on its own orphan branch, "orchestrator-data", deliberately NOT on
+#   main and NOT on any feature branch, so this bookkeeping never touches app
+#   code or runs CI on your default branch.
 #
-#   Free-form human comments are carried in the same state file under
-#   "human_messages": [{"author","body","delivered"}]. They are appended by the
-#   deterministic "chat" job (never by an LLM), and flipped to delivered:true by the
-#   next deterministic routing/handback step that runs after an agent has had a chance
-#   to read and address them — same "bash writes state, LLM only reads it" rule as
-#   everything else here.
+# ONE-TIME SETUP:
+#   1. Reuses the SAME `PAT_TOKEN` secret as opencode.yml — it already needs
+#      `repo` + `workflow` scopes there, and `workflow` scope is exactly what
+#      lets this workflow trigger opencode.yml's workflow_dispatch on your
+#      behalf. No new secret needed.
+#   2. Update BOT_NAME below to the SAME value used in opencode.yml.
+#   3. Run this workflow ONCE by hand from the Actions tab
+#      (workflow_dispatch, no inputs needed) — this creates the
+#      "orchestrator-data" branch and a first "orchestrator" issue.
+#      After that, comment on that issue, or open more (see MULTIPLE
+#      CONVERSATIONS above) whenever you like.
 #
-# SHARED CONTEXT:
-#   Every agent run is stateless (fresh container, no memory of previous runs).
-#   Context is carried forward explicitly via a committed file on the PR branch:
-#   .github/agent-state.json — containing the original task, the cycle counter,
-#   the safety ceiling, the latest findings, pending human messages, and a short
-#   history log. Every agent is instructed to read this file (and
-#   `gh pr view --comments`) before acting.
+# SAFETY BOUNDARIES (mirrors opencode.yml's SECURITY NOTE — do not relax):
+#   - Only users with write/admin repo permission can talk to the orchestrator,
+#     or open a new conversation by labeling an issue — checked on every
+#     single comment and every labeling event, same check as opencode.yml's
+#     merge_gate/chat jobs.
+#   - The orchestrator is explicitly instructed it may NEVER merge a PR, delete
+#     a branch, push to main, or post "/merge yes"/"/merge no" on anyone's
+#     behalf. Getting a PR merged always requires the human to comment
+#     "/merge yes" themselves — the orchestrator can only remind them to.
+#   - The orchestrator never checks out or edits a PR's own branch beyond its
+#     .github/agent-state.json (via the Contents API, not a second git
+#     checkout) — it never touches application code.
 #
-# REQUIRED ONE-TIME SETUP:
-#   1. Secret PAT_TOKEN — a Personal Access Token for the bot account (repo + workflow scopes).
-#   2. Update BOT_NAME below (workflow env, AND the literal string inside merge_gate's `if:`,
-#      AND the literal string inside chat's `if:` — env context isn't available in job-level
-#      `if:` conditions, so all three must be kept in sync by hand) to match the GitHub
-#      username tied to PAT_TOKEN.
-#   3. Nothing else — pipeline labels are created automatically on first run.
-#
-# SECURITY NOTE:
-#   issue_comment runs with PAT_TOKEN regardless of who commented, which is why
-#   merge_gate AND chat both double-check the commenter's actual repo permission via
-#   the API before ever calling `gh pr merge` or handing an instruction to an agent.
-#   On a public repo, treat this as a real attack surface — don't loosen either check.
-#   Without it, any random public commenter could redirect a paid LLM agent to push
-#   arbitrary changes to the PR branch (nothing reaches main without a separate
-#   write/admin "/merge yes", but it's still a cost and integrity risk worth blocking).
+# EDGE CASES THIS FILE HANDS (see inline comments at each job):
+#   - Someone without write/admin access comments, or labels an issue to try
+#     to open a conversation → refused with a clear reply (and the label is
+#     removed again in the labeling case).
+#   - The bot's OWN comments/labels are ignored everywhere (no self-triggering
+#     loops).
+#   - Someone talks to it before running Bootstrap → clear guidance instead of
+#     a silent job failure. Labeling an issue works even before Bootstrap has
+#     ever run — it creates the shared data branch itself if missing.
+#   - Two people (or one impatient person) comment in quick succession, in the
+#     SAME issue → per-issue concurrency group processes them one at a time,
+#     in order. Different issues are fully independent and run in parallel.
+#   - A state-file push races with something else → fetch+reset+retry, same
+#     pattern as opencode.yml (never a raw `git pull` that can conflict).
+#   - Multiple bootstrap runs → the branch stays idempotent; a new issue is
+#     created each time (that's the intended way to spin up another
+#     conversation from the Actions tab instead of labeling one by hand).
+#   - A referenced PR is already merged → the orchestrator is told to check and
+#     say so plainly, instead of trying to act on a deleted branch.
+#   - workflow_dispatch is fire-and-forget (no PR number comes back
+#     immediately) → a separate `track_new_builds` job auto-detects the new PR
+#     the moment the pipeline opens it, reads which issue asked for it from
+#     the PR's own state file, and relays it into THAT conversation
+#     specifically — not just whichever orchestrator issue happens to be
+#     oldest.
 # ==============================================================================
 
-name: 🤖 Multi-Agent Feature Pipeline
+
+name: 🧠 Orchestrator
 
 on:
   workflow_dispatch:
-    inputs:
-      prompt:
-        description: "Describe the feature or task"
-        required: true
-        type: string
-      max_cycles:
-        description: "Safety ceiling for review<->fix cycles (a hard stop, not a target — big tasks may need many)"
-        required: false
-        default: "15"
-        type: string
-      model:
-        description: "OpenCode model"
-        required: false
-        default: "ninerouter/kc/poolside/laguna-s-2.1:free"
-        type: string
-      target:
-        description: "PR number, branch name, or its GitHub tree URL to RE-review (leave EMPTY to build a brand-new feature instead)"
-        required: false
-        default: ""
-        type: string
-      origin_issue:
-        description: "Internal — orchestrator issue number this request came from (leave empty for manual runs)"
-        required: false
-        default: ""
-        type: string
-  pull_request:
-    types: [labeled]
   issue_comment:
     types: [created]
-  schedule:
-    # Safety net independent of any single run: catches a bot-authored PR that ended up with no
-    # pipeline label at all, no matter which stage dropped it (a crashed runner, a step that never
-    # got added yet, etc.) — not just the specific Build handoff the in-job safety net above covers.
-    - cron: "*/30 * * * *"
+  pull_request:
+    types: [opened]
+  issues:
+    types: [labeled]
 
 permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: write
 
 env:
-  BOT_NAME: "mohamed-AFYU" # ⚠️ غيّر ده لاسم حساب الـ PAT_TOKEN بتاعك
-  STATE_FILE: ".github/agent-state.json"
-
-concurrency:
-  group: agent-pipeline-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-  cancel-in-progress: false
+  BOT_NAME: "mohamed-AFYU" # ⚠️ لازم يكون نفس القيمة الموجودة في opencode.yml
+  PIPELINE_WORKFLOW: "opencode.yml"
+  DATA_BRANCH: "orchestrator-data"
+  STATE_FILE: "orchestrator-state.json"
+  ORCH_LABEL: "orchestrator"
 
 jobs:
   # ============================================================================
-  # STAGE 0 — BUILD
+  # BOOTSTRAP — run once by hand: creates the data branch + the persistent issue
   # ============================================================================
-  build:
-    name: 🏗️ Build Agent
-    if: github.event_name == 'workflow_dispatch' && inputs.target == ''
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: ⚙️ Configure Git
-        run: |
-          git config --global user.name "${{ env.BOT_NAME }}"
-          git config --global user.email "findlapmn@gmail.com"
-          git config --global init.defaultBranch main
-
-      - name: 🏷️ Ensure pipeline labels exist
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          declare -a LABELS=(
-            "agent:review|0e8a16"
-            "agent:fix|d93f0b"
-            "agent:verify|1d76db"
-            "agent:decision|5319e7"
-            "agent:blocked|b60205"
-            "agent:merged|0e8a16"
-            "agent:closed-by-human|cccccc"
-          )
-          for L in "${LABELS[@]}"; do
-            NAME="${L%%|*}"
-            COLOR="${L##*|}"
-            gh label create "$NAME" --color "$COLOR" --force
-          done
-
-      - name: 🌱 Create working branch
-        id: branch
-        run: |
-          BRANCH="agent/feature-${{ github.run_id }}"
-          git checkout -b "$BRANCH"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-
-      - name: 📝 Initialize pipeline state file
-        env:
-          TASK_PROMPT: ${{ inputs.prompt }}
-          MAX_CYCLES: ${{ inputs.max_cycles }}
-          ORIGIN_ISSUE: ${{ inputs.origin_issue }}
-        run: |
-          mkdir -p "$(dirname "$STATE_FILE")"
-          jq -n --arg task "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" --arg origin "$ORIGIN_ISSUE" \
-            '{task:$task, max_cycles:$maxc, cycle:0, status:"building", findings:[], history:[], origin_issue:$origin}' \
-            > "$STATE_FILE"
-          git add "$STATE_FILE"
-          git commit -m "chore(pipeline): init state"
-          git push origin "${{ steps.branch.outputs.branch }}"
-
-      - name: 🏗️ Run Build Agent
-        uses: anomalyco/opencode/github@latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-        with:
-          model: ${{ inputs.model }}
-          use_github_token: true
-          prompt: |
-            You are the BUILD AGENT in a multi-agent pipeline (Build → Review ⇄ Fix → Verify → Decision).
-
-            TASK FROM USER:
-            ${{ inputs.prompt }}
-
-            YOU ARE ON BRANCH: ${{ steps.branch.outputs.branch }}
-
-            YOUR JOB:
-            1. Inspect the repository BEFORE deciding anything: read the actual directory structure and at
-               least one existing feature end-to-end (whichever existing command/handler/flow is closest in
-               kind to what's being asked) to see how it's wired together. Your design for the new feature
-               MUST reuse the same interface layer, storage mechanism, and conventions already in this repo.
-               Never introduce a new interface (a web panel, a REST API, a new bot-command style, a new
-               database engine, etc.) that isn't already how this project works, even if the task text uses
-               generic words like "system", "admin panel", or "dashboard" — those words describe an OUTCOME
-               the human wants, not an architecture; the EXISTING CODE decides the architecture, not the
-               wording of the request. If the task is genuinely ambiguous about WHAT to build (not how),
-               pick the most conservative reading that fits how existing features are exposed to users, and
-               say so explicitly in your PR comment (step 6) rather than guessing silently.
-            2. Implement the requested feature/fix completely and correctly on this branch.
-            3. Run any available build/lint/test commands and fix what you can before finishing.
-            4. Commit your work with clear messages.
-            5. Push the branch and open a Pull Request against the default branch.
-               - PR title: a concise summary of the task.
-               - PR description MUST include a "## Pipeline" section explaining this PR is managed by an
-                 automated multi-agent pipeline (Build → Review → Fix → Verify → Decision), and that a human
-                 will get a final merge confirmation prompt once everything passes.
-            6. Post ONE comment on the PR starting with the header "### 🏗️ Build Agent", in plain Markdown
-               only (never leave raw tool-call/function-call syntax in it — a human reads this comment), with
-               these sections in order:
-               - "**Existing patterns I followed:**" — name the actual files/modules you modeled this on.
-               - "**What I built:**" — a summary of what you built.
-               - "**Assumptions I made:**" — anything genuinely ambiguous in the task and how you resolved it.
-               This comment is how the human catches a misunderstanding early — write it for that purpose,
-               not as a generic changelog.
-            7. Add the label "agent:review" to the PR to hand off to the Review Agent. THIS STEP IS
-               MANDATORY AND MUST BE THE LAST THING YOU DO. The entire pipeline is inert until this label
-               exists — do not end your turn without having added it AND re-read the PR's labels to confirm
-               it is actually there. (A deterministic safety-net step also runs after you and will add it if
-               you forget — but that is a fallback for a mistake, not a substitute for doing this yourself.)
-
-            RULES:
-            - Do NOT add or remove any other pipeline label ("agent:fix", "agent:verify", "agent:decision",
-              "agent:blocked"). Routing beyond this first handoff is handled by the workflow itself.
-            - Do NOT merge anything.
-            - Never fake a passing test or a successful build.
-
-      - name: 🛟 Safety net — recover a dropped handoff
-        # An LLM finishing its main task and forgetting the bookkeeping tail (opening the PR, or
-        # opening it but skipping the final label) is an observed failure mode, not a hypothetical
-        # one — it's exactly what silently stalled a real build before this step existed. Recover
-        # deterministically instead of the feature going missing with no signal to the human.
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          BRANCH="${{ steps.branch.outputs.branch }}"
-
-          if [ -z "$BRANCH" ]; then
-            echo "❌ No branch name recorded — the branch-creation step itself never completed." >&2
-            exit 1
-          fi
-
-          PR=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
-
-          if [ -z "$PR" ]; then
-            echo "❌ No open PR found for branch $BRANCH — the Build Agent likely never pushed/opened one." >&2
-            exit 1
-          fi
-
-          HAS_PIPELINE_LABEL=$(gh pr view "$PR" --repo "${{ github.repository }}" --json labels --jq \
-            '[.labels[].name] | any(. == "agent:review" or . == "agent:fix" or . == "agent:verify" or . == "agent:decision" or . == "agent:blocked" or . == "agent:merged" or . == "agent:closed-by-human")')
-
-          if [ "$HAS_PIPELINE_LABEL" != "true" ]; then
-            echo "⚠️ PR #$PR has no pipeline label — Build Agent forgot the handoff. Adding agent:review."
-            gh pr edit "$PR" --repo "${{ github.repository }}" --add-label "agent:review"
-            gh pr comment "$PR" --repo "${{ github.repository }}" --body "### 🛟 Pipeline safety net
-          The Build Agent finished the implementation but didn't hand this PR off (no \`agent:*\` label was
-          present). I've added \`agent:review\` automatically so the Review → Fix → Verify → Decision loop
-          continues normally."
-          fi
-
-  # ============================================================================
-  # STAGE 0b — RESUME REVIEW (re-review/re-fix an EXISTING branch or PR)
-  # ============================================================================
-  # Triggered instead of [BUILD] when workflow_dispatch is run with "target" filled
-  # in (a PR number, a branch name like agent/feature-34656420282, or its GitHub
-  # tree URL). Skips branch/PR creation entirely and just resets that PR back into
-  # the normal Review → Fix → Verify → Decision loop with a fresh cycle counter.
-  resume_review:
-    name: 🔁 Resume Review Agent
-    if: github.event_name == 'workflow_dispatch' && inputs.target != ''
+  bootstrap:
+    name: 🧰 Bootstrap
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -304,557 +139,84 @@ jobs:
           git config --global user.name "${{ env.BOT_NAME }}"
           git config --global user.email "findlapmn@gmail.com"
 
-      - name: 🔎 Resolve target into a PR number
-        id: resolve
+      - name: 🏷️ Ensure the "orchestrator" label exists
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-          TARGET: ${{ inputs.target }}
-        run: |
-          # Accepts a plain PR number ("34"), a branch name
-          # ("agent/feature-34656420282"), or a full .../tree/<branch> URL.
-          BRANCH="${TARGET##*/tree/}"
+          # 👈 استخدام GITHUB_TOKEN الافتراضي لتجنب خطأ 403
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh label create "${{ env.ORCH_LABEL }}" --color "5319e7" --force
 
-          if [[ "$BRANCH" =~ ^[0-9]+$ ]]; then
-            PR="$BRANCH"
-          else
-            PR=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --state all --json number --jq '.[0].number // empty')
-          fi
-
-          if [ -z "$PR" ]; then
-            echo "❌ Could not find any PR for target '$TARGET' (resolved branch: '$BRANCH')." >&2
-            echo "Pass a PR number, a branch name, or its GitHub tree URL in the 'target' input." >&2
-            exit 1
-          fi
-
-          PR_STATE=$(gh pr view "$PR" --repo "${{ github.repository }}" --json state --jq .state)
-          if [ "$PR_STATE" = "MERGED" ]; then
-            echo "❌ PR #$PR is already merged — its branch was deleted when it merged, so there's nothing left to resume." >&2
-            echo "Start a fresh workflow_dispatch run with an empty 'target' instead." >&2
-            exit 1
-          fi
-
-          echo "pr=$PR" >> "$GITHUB_OUTPUT"
-
-      - name: 🔀 Checkout that PR's branch
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: gh pr checkout ${{ steps.resolve.outputs.pr }} --repo "${{ github.repository }}"
-
-      - name: 📝 Reset pipeline state for a fresh review round
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-          TASK_PROMPT: ${{ inputs.prompt }}
-          MAX_CYCLES: ${{ inputs.max_cycles }}
-          ACTOR: ${{ github.actor }}
-          ORIGIN_ISSUE: ${{ inputs.origin_issue }}
-        run: |
-          BRANCH=$(git branch --show-current)
-          mkdir -p "$(dirname "$STATE_FILE")"
-
-          write_state() {
-            if [ -f "$STATE_FILE" ]; then
-              # Already pipeline-managed: keep history, restart the cycle counter,
-              # and record the new instruction so Review/Fix can see exactly what
-              # was asked for this round. Only overwrite origin_issue if this resume
-              # actually came from an orchestrator conversation (non-empty) — a
-              # manual workflow_dispatch run shouldn't silently unset existing routing.
-              jq --arg author "$ACTOR" --arg body "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" --arg origin "$ORIGIN_ISSUE" \
-                '.cycle = 0
-                 | .max_cycles = $maxc
-                 | .status = "building"
-                 | (if $origin != "" then .origin_issue = $origin else . end)
-                 | .human_messages = ((.human_messages // []) + [{"author":$author,"body":$body,"delivered":false}])' \
-                "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
-            else
-              # Ad-hoc branch/PR the pipeline never touched before: initialize fresh.
-              jq -n --arg task "$TASK_PROMPT" --argjson maxc "$MAX_CYCLES" --arg origin "$ORIGIN_ISSUE" \
-                '{task:$task, max_cycles:$maxc, cycle:0, status:"building", findings:[], history:[], human_messages:[], origin_issue:$origin}' \
-                > "$STATE_FILE"
-            fi
-          }
-
-          write_state
-          git add "$STATE_FILE"
-          git commit -m "chore(pipeline): resume review at request of $ACTOR" --allow-empty
-
-          for ATTEMPT in 1 2 3 4 5; do
-            if git push origin "$BRANCH"; then
-              break
-            fi
-            echo "⚠️ Push rejected (attempt $ATTEMPT/5) — refetching and retrying..."
-            git reset --soft HEAD~1
-            git fetch origin "$BRANCH"
-            git reset --hard "origin/$BRANCH"
-            write_state
-            git add "$STATE_FILE"
-            git commit -m "chore(pipeline): resume review at request of $ACTOR" --allow-empty
-            sleep $((RANDOM % 3 + 1))
-            if [ "$ATTEMPT" -eq 5 ]; then
-              echo "❌ Failed to push the resumed state after 5 attempts." >&2
-              exit 1
-            fi
-          done
-
-      - name: 🏷️ Reset labels and hand off to Review Agent
+      - name: 🌿 Ensure the orchestrator-data branch exists (idempotent)
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          PR="${{ steps.resolve.outputs.pr }}"
-          for L in agent:fix agent:verify agent:decision agent:blocked agent:merged agent:closed-by-human; do
-            gh pr edit "$PR" --repo "${{ github.repository }}" --remove-label "$L" 2>/dev/null || true
-          done
-          gh pr edit "$PR" --repo "${{ github.repository }}" --add-label "agent:review"
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body "### 🔁 Resume requested by @${{ github.actor }}
-          > ${{ inputs.prompt }}
+          if git ls-remote --exit-code --heads origin "${{ env.DATA_BRANCH }}" > /dev/null 2>&1; then
+            echo "ℹ️ Branch ${{ env.DATA_BRANCH }} already exists — leaving it untouched."
+            exit 0
+          fi
+          git checkout --orphan "${{ env.DATA_BRANCH }}"
+          git rm -rf . > /dev/null 2>&1 || true
+          jq -n '{delegated_prs: []}' > "${{ env.STATE_FILE }}"
+          git add "${{ env.STATE_FILE }}"
+          git commit -m "chore(orchestrator): initialize state"
+          git push origin "${{ env.DATA_BRANCH }}"
 
-          Restarting the Review → Fix → Verify → Decision loop on this PR (cycle counter reset)."
+      - name: 🧵 Open a new orchestrator conversation issue
+        # No longer capped at one — re-running Bootstrap is a valid, deliberate way to open
+        # another conversation (the other way is labeling any issue "orchestrator" by hand, see
+        # the open_conversation job). The branch step above stays idempotent; this one doesn't
+        # need to be, since a human intentionally re-ran this from the Actions tab.
+        env:
+          # 👈 استخدام GITHUB_TOKEN الافتراضي لتجنب خطأ 403
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "🧠 Orchestrator — talk to the pipeline here (#${{ github.run_id }})" \
+            --label "${{ env.ORCH_LABEL }}" \
+            --body "### 🧠 This issue is your ongoing conversation with the orchestrator
+
+          Comment here in plain language. It will reply, and it can delegate work to the
+          pipeline on your behalf:
+          - Start a brand-new feature build.
+          - Point an existing PR (by number, branch name, or link) at review or a fix.
+          - Summarize where any PR it's tracking currently stands.
+
+          It will **never** merge a PR or push to \`main\` for you — merging still needs
+          you to comment \`/merge yes\` yourself on that specific PR, exactly as before.
+
+          Only repo collaborators with write/admin access can give it instructions here.
+
+          ---
+          **Want a separate conversation for a different feature/thread?** Open any new GitHub
+          issue and add the \`${{ env.ORCH_LABEL }}\` label to it — it becomes a fully independent
+          orchestrator conversation immediately, with its own history and its own tracked PRs. You
+          can have as many open at once as you like."
 
   # ============================================================================
-  # STAGE 1 — REVIEW
+  # OPEN CONVERSATION — turns any issue into a live orchestrator conversation the
+  # moment it gets the "orchestrator" label. This is how you open a NEW, separate
+  # conversation whenever you want — no need to touch Actions/workflow_dispatch at
+  # all: just label an issue and start commenting.
   # ============================================================================
-  review:
-    name: 🔍 Review Agent
+  open_conversation:
+    name: 🆕 Open new conversation
+    # 👈 نفس نمط باقي الـ jobs: امنع البوت يفتح محادثة مع نفسه (لا self-triggering loop)
     if: |
-      github.event_name == 'pull_request' &&
+      github.event_name == 'issues' &&
       github.event.action == 'labeled' &&
-      github.event.label.name == 'agent:review'
+      github.event.label.name == 'orchestrator' &&
+      github.event.sender.login != 'mohamed-AFYU'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: 🔀 Checkout PR branch
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: gh pr checkout ${{ github.event.pull_request.number }}
-
-      - name: 🔍 Run Review Agent
-        uses: anomalyco/opencode/github@latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-        with:
-          model: ninerouter/kc/poolside/laguna-s-2.1:free
-          use_github_token: true
-          prompt: |
-            You are the REVIEW AGENT in a multi-agent pipeline.
-
-            Before anything else, read the full context:
-            - `gh pr view ${{ github.event.pull_request.number }} --comments`
-            - the file at $STATE_FILE on this branch (path: .github/agent-state.json), especially the
-              "task" and "history" fields, so you know what was actually asked for. Also check
-              "human_messages" for any entry with "delivered": false — a human commented directly on this
-              PR; briefly acknowledge it in your comment even though only the Fix Agent can act on code
-              changes it requests.
-
-            YOUR JOB:
-            Review the complete diff of this PR as a senior engineer. Look for bugs, logic errors, security
-            issues, performance problems, missing error handling, missing tests for important behavior, and
-            any deviation from the task described in the state file.
-
-            Do NOT modify code. Do NOT push any commits except updating the state file as instructed below.
-
-            OUTPUT (do both):
-            1. Post ONE PR comment starting with header "### 🔍 Review Agent — Cycle <current cycle from state
-               file>" listing every issue found (Title / Severity / File / Why it matters / Suggested fix), or
-               clearly stating "No issues found." if the PR is clean. Only report issues you can support with
-               evidence from the code — never invent problems just to produce a report.
-            2. Update .github/agent-state.json on this branch:
-               - set "status" to exactly "issues_found" or "clean"
-               - if issues_found: replace "findings" with a JSON array of
-                 {"title","severity","file","detail"} objects for THIS cycle only (overwrite, don't append)
-               - if clean: set "findings" to an empty array
-               - append one object to "history": {"agent":"review","cycle":<current cycle>,"result":"<status>"}
-               - before committing, run `git pull --rebase origin ${{ github.event.pull_request.head.ref }}`
-                 to reduce the chance of a conflicting write, then commit and push ONLY this file,
-                 message: "chore(pipeline): review cycle result". If the push is rejected, pull --rebase
-                 again and retry once.
-
-            RULES:
-            - Do NOT add or remove any "agent:*" label yourself — the workflow does this automatically based
-              on the state file you just wrote.
-            - Ground every claim about pipeline history in what .github/agent-state.json's "history" array
-              actually contains. Never say a stage was "skipped", "not needed", or similar unless you can
-              point to the specific entry that shows it — that phrasing describes something this pipeline
-              does not do.
-
-      - name: 🧭 Route based on review result
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          BRANCH="${{ github.event.pull_request.head.ref }}"
-          PR=${{ github.event.pull_request.number }}
-
-          # Always take the remote copy of the branch as ground truth instead of
-          # `git pull` (a merge), which can leave real conflict markers inside
-          # agent-state.json if another run touched it at the same time.
-          git fetch origin "$BRANCH"
-          git checkout "$BRANCH"
-          git reset --hard "origin/$BRANCH"
-
-          STATUS=$(jq -r '.status' "$STATE_FILE")
-          CYCLE=$(jq -r '.cycle' "$STATE_FILE")
-          MAXC=$(jq -r '.max_cycles' "$STATE_FILE")
-
-          # Mark any human message the Review Agent just acknowledged as delivered.
-          if jq -e '(.human_messages // []) | any(.delivered == false)' "$STATE_FILE" > /dev/null; then
-            jq '.human_messages = ((.human_messages // []) | map(.delivered = true))' \
-              "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
-            git add "$STATE_FILE"
-            git commit -m "chore(pipeline): mark human messages delivered"
-            git push origin "$BRANCH" || { git fetch origin "$BRANCH"; git reset --hard "origin/$BRANCH"; }
-          fi
-
-          gh pr edit "$PR" --remove-label "agent:review"
-
-          if [ "$STATUS" = "clean" ]; then
-            gh pr edit "$PR" --add-label "agent:verify"
-            exit 0
-          fi
-
-          if [ "$CYCLE" -ge "$MAXC" ]; then
-            gh pr edit "$PR" --add-label "agent:blocked"
-            gh pr comment "$PR" --body "### 🛑 Safety ceiling reached
-          The pipeline hit its safety limit of **$MAXC** review↔fix cycles without converging.
-
-          Please check the findings above and either:
-          - fix things manually and re-add the \`agent:review\` label to resume, or
-          - comment with further instructions.
-
-          @${{ github.repository_owner }}"
-            exit 0
-          fi
-
-          NEWCYCLE=$((CYCLE + 1))
-
-          # Retry loop: if the push is rejected because something else wrote to
-          # this branch between our reset and our push, re-fetch, redo the edit
-          # on top of the fresh copy, and try again — instead of merging (and
-          # possibly conflicting) or just failing outright.
-          for ATTEMPT in 1 2 3 4 5; do
-            jq --argjson c "$NEWCYCLE" '.cycle = $c' "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
-            git add "$STATE_FILE"
-            git commit -m "chore(pipeline): advance to cycle $NEWCYCLE"
-
-            if git push origin "$BRANCH"; then
-              break
-            fi
-
-            echo "⚠️ Push rejected (attempt $ATTEMPT/5) — refetching and retrying..."
-            git reset --soft HEAD~1
-            git fetch origin "$BRANCH"
-            git reset --hard "origin/$BRANCH"
-            sleep $((RANDOM % 3 + 1))
-
-            if [ "$ATTEMPT" -eq 5 ]; then
-              echo "❌ Failed to push agent-state.json after 5 attempts." >&2
-              gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ Pipeline could not update \`agent-state.json\` after several retries (concurrent write conflict). @${{ github.repository_owner }} please check the Actions log for run ${{ github.run_id }}."
-              exit 1
-            fi
-          done
-
-          gh pr edit "$PR" --add-label "agent:fix"
-
-  # ============================================================================
-  # STAGE 2 — FIX
-  # ============================================================================
-  fix:
-    name: 🛠️ Fix Agent
-    if: |
-      github.event_name == 'pull_request' &&
-      github.event.action == 'labeled' &&
-      github.event.label.name == 'agent:fix'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: 🔀 Checkout PR branch
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: gh pr checkout ${{ github.event.pull_request.number }}
-
-      - name: 🛠️ Run Fix Agent
-        uses: anomalyco/opencode/github@latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-        with:
-          model: ninerouter/kc/poolside/laguna-s-2.1:free
-          use_github_token: true
-          prompt: |
-            You are the FIX AGENT in a multi-agent pipeline.
-
-            Read .github/agent-state.json on this branch — it contains "findings" from the last Review or
-            Verify Agent pass (current cycle) and the original "task". It may also contain a "human_messages"
-            array — free-form comments a human posted directly on the PR. Treat any entry with
-            "delivered": false as addressed to you right now.
-
-            YOUR JOB:
-            1. If there are undelivered human_messages, read each one and actually do what it asks (answer a
-               question, change direction, implement a specific request) in addition to the review findings.
-               If a message conflicts with a review finding, the human's message wins — they're the one paying
-               attention right now.
-            2. Fix EVERY finding listed. Do not introduce unrelated changes, and do not introduce a new
-               interface, storage mechanism, or pattern the rest of this codebase doesn't already use — match
-               what's already there. Run relevant tests/build/lint after fixing and confirm they actually
-               pass. Never fake a passing test.
-
-            OUTPUT:
-            1. Commit and push your fixes to this branch.
-            2. Post ONE PR comment, in plain Markdown only (never raw tool-call/function-call syntax — a
-               human reads this), starting with header "### 🛠️ Fix Agent — Cycle <current cycle>" explaining
-               what you changed for each finding, AND a short reply to each undelivered human message you saw
-               (quote or paraphrase what they asked, then say what you did about it).
-            3. Do NOT edit .github/agent-state.json and do NOT touch any "agent:*" label — the workflow hands
-               this back to the Review Agent automatically, and also marks your human_messages as delivered.
-
-      - name: 🔁 Mark messages delivered + hand back to Review Agent
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          BRANCH=$(git branch --show-current)
-          PR=${{ github.event.pull_request.number }}
-
-          for ATTEMPT in 1 2 3 4 5; do
-            jq '.human_messages = ((.human_messages // []) | map(.delivered = true))' \
-              "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
-
-            if ! git diff --quiet -- "$STATE_FILE"; then
-              git add "$STATE_FILE"
-              git commit -m "chore(pipeline): mark human messages delivered"
-              if git push origin "$BRANCH"; then
-                break
-              fi
-              echo "⚠️ Push rejected (attempt $ATTEMPT/5) — refetching and retrying..."
-              git reset --soft HEAD~1
-              git fetch origin "$BRANCH"
-              git reset --hard "origin/$BRANCH"
-              sleep $((RANDOM % 3 + 1))
-            else
-              break
-            fi
-
-            if [ "$ATTEMPT" -eq 5 ]; then
-              echo "❌ Failed to mark messages delivered after 5 attempts." >&2
-            fi
-          done
-
-          gh pr edit "$PR" --remove-label "agent:fix" --add-label "agent:review"
-
-  # ============================================================================
-  # STAGE 3 — VERIFY (independent double-check, doesn't trust Review's verdict)
-  # ============================================================================
-  verify:
-    name: ✅ Verify Agent
-    if: |
-      github.event_name == 'pull_request' &&
-      github.event.action == 'labeled' &&
-      github.event.label.name == 'agent:verify'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.PAT_TOKEN }}
-
-      - name: 🔀 Checkout PR branch
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: gh pr checkout ${{ github.event.pull_request.number }}
-
-      - name: ✅ Run Verify Agent
-        uses: anomalyco/opencode/github@latest
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
-        with:
-          model: ninerouter/kc/poolside/laguna-s-2.1:free
-          use_github_token: true
-          prompt: |
-            You are the VERIFY AGENT — the independent quality gate. Do NOT trust the Review Agent's earlier
-            "clean" verdict blindly; re-check everything for yourself.
-
-            YOUR JOB:
-            1. Actually run the project's build, lint, and test commands (detect them from the repo — e.g.
-               package.json scripts, Makefile, etc.). Report REAL command output, never fabricate results.
-            2. Confirm the implementation genuinely satisfies the original task described in
-               .github/agent-state.json ("task" field) — not just "no errors", but "does what was asked".
-            3. Check "human_messages" in the state file for any entry with "delivered": false and briefly
-               acknowledge it in your comment (only the Fix Agent can act on code-change requests from it).
-            4. Do NOT modify code.
-            5. Ground every claim in this comment in what you actually ran and actually read in
-               .github/agent-state.json's "history" — never say an earlier stage was "skipped" or "not
-               needed" unless a specific history entry proves it.
-
-            OUTPUT (do both):
-            1. Post ONE PR comment starting with header "### ✅ Verify Agent" with a summary of the real
-               command output and your verdict.
-            2. Update .github/agent-state.json:
-               - set "status" to "clean" (ready to ask the human) or "issues_found"
-               - if issues_found: replace "findings" with the new problems (same schema as Review Agent uses)
-               - append to "history": {"agent":"verify","cycle":<current cycle>,"result":"<status>"}
-               - before committing, run `git pull --rebase origin ${{ github.event.pull_request.head.ref }}`
-                 to reduce the chance of a conflicting write, then commit and push ONLY this file. If the
-                 push is rejected, pull --rebase again and retry once.
-
-      - name: 🧭 Route based on verify result
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          BRANCH="${{ github.event.pull_request.head.ref }}"
-          PR=${{ github.event.pull_request.number }}
-
-          git fetch origin "$BRANCH"
-          git checkout "$BRANCH"
-          git reset --hard "origin/$BRANCH"
-
-          STATUS=$(jq -r '.status' "$STATE_FILE")
-          CYCLE=$(jq -r '.cycle' "$STATE_FILE")
-          MAXC=$(jq -r '.max_cycles' "$STATE_FILE")
-
-          # Mark any human message the Verify Agent just acknowledged as delivered.
-          if jq -e '(.human_messages // []) | any(.delivered == false)' "$STATE_FILE" > /dev/null; then
-            jq '.human_messages = ((.human_messages // []) | map(.delivered = true))' \
-              "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
-            git add "$STATE_FILE"
-            git commit -m "chore(pipeline): mark human messages delivered"
-            git push origin "$BRANCH" || { git fetch origin "$BRANCH"; git reset --hard "origin/$BRANCH"; }
-          fi
-
-          gh pr edit "$PR" --remove-label "agent:verify"
-
-          if [ "$STATUS" = "clean" ]; then
-            gh pr edit "$PR" --add-label "agent:decision"
-            exit 0
-          fi
-
-          if [ "$CYCLE" -ge "$MAXC" ]; then
-            gh pr edit "$PR" --add-label "agent:blocked"
-            gh pr comment "$PR" --body "### 🛑 Safety ceiling reached during verification
-          @${{ github.repository_owner }} — please take a look at the findings above."
-            exit 0
-          fi
-
-          NEWCYCLE=$((CYCLE + 1))
-
-          for ATTEMPT in 1 2 3 4 5; do
-            jq --argjson c "$NEWCYCLE" '.cycle = $c' "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
-            git add "$STATE_FILE"
-            git commit -m "chore(pipeline): verify found issues, advance to cycle $NEWCYCLE"
-
-            if git push origin "$BRANCH"; then
-              break
-            fi
-
-            echo "⚠️ Push rejected (attempt $ATTEMPT/5) — refetching and retrying..."
-            git reset --soft HEAD~1
-            git fetch origin "$BRANCH"
-            git reset --hard "origin/$BRANCH"
-            sleep $((RANDOM % 3 + 1))
-
-            if [ "$ATTEMPT" -eq 5 ]; then
-              echo "❌ Failed to push agent-state.json after 5 attempts." >&2
-              gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ Pipeline could not update \`agent-state.json\` after several retries (concurrent write conflict). @${{ github.repository_owner }} please check the Actions log for run ${{ github.run_id }}."
-              exit 1
-            fi
-          done
-
-          gh pr edit "$PR" --add-label "agent:fix"
-
-  # ============================================================================
-  # STAGE 4 — DECISION (asks the human, does nothing else)
-  # ============================================================================
-  decision:
-    name: 🏁 Decision Gate
-    if: |
-      github.event_name == 'pull_request' &&
-      github.event.action == 'labeled' &&
-      github.event.label.name == 'agent:decision'
-    runs-on: ubuntu-latest
-    steps:
-      - name: 🏁 Ask for merge confirmation
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          PR=${{ github.event.pull_request.number }}
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body "### 🏁 Pipeline complete — awaiting your decision
-          The feature has been built, reviewed, fixed as needed, and independently verified. No open issues.
-
-          Reply on this PR with:
-          - \`/merge yes\` to squash-merge this PR
-          - \`/merge no\` to stop here (PR stays open, nothing happens automatically)
-
-          @${{ github.repository_owner }}"
-
-  # ============================================================================
-  # STAGE 5 — MERGE GATE (only reacts to explicit human confirmation)
-  # ============================================================================
-  merge_gate:
-    name: 🔀 Merge Gate
-    if: |
-      github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request != null &&
-      github.event.comment.user.login != 'mohamed-AFYU' &&
-      contains(github.event.issue.labels.*.name, 'agent:decision') &&
-      (startsWith(github.event.comment.body, '/merge yes') || startsWith(github.event.comment.body, '/merge no'))
-    runs-on: ubuntu-latest
-    steps:
-      - name: 🔀 Verify permission and act on decision
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
-        run: |
-          PR=${{ github.event.issue.number }}
-
-          PERM=$(gh api "repos/${{ github.repository }}/collaborators/${COMMENT_AUTHOR}/permission" --jq .permission)
-          if [ "$PERM" != "admin" ] && [ "$PERM" != "write" ]; then
-            gh pr comment "$PR" --body "⚠️ @${COMMENT_AUTHOR} doesn't have permission to confirm a merge on this repo."
-            exit 0
-          fi
-
-          if [[ "$COMMENT_BODY" == "/merge yes"* ]]; then
-            gh pr merge "$PR" --squash --delete-branch
-            gh pr edit "$PR" --remove-label "agent:decision" --add-label "agent:merged"
-          else
-            gh pr comment "$PR" --body "👍 Got it — leaving this PR open without merging."
-            gh pr edit "$PR" --remove-label "agent:decision" --add-label "agent:closed-by-human"
-          fi
-
-  # ============================================================================
-  # STAGE 6 — CHAT RELAY (free-form comments on the PR, outside /merge commands)
-  # ============================================================================
-  # Triggers on ANY new PR comment that is NOT "/merge yes"/"/merge no" (that stays
-  # merge_gate's job) AND only while the pipeline is actively alive on this PR
-  # (one of the five non-terminal labels is present). Gated by the same write/admin
-  # permission check as merge_gate — see SECURITY NOTE at the top of this file.
-  chat:
-    name: 💬 Chat Relay
-    if: |
-      github.event_name == 'issue_comment' &&
-      github.event.issue.pull_request != null &&
-      github.event.comment.user.login != 'mohamed-AFYU' &&
-      !startsWith(github.event.comment.body, '/merge yes') &&
-      !startsWith(github.event.comment.body, '/merge no') &&
-      (contains(github.event.issue.labels.*.name, 'agent:review') ||
-       contains(github.event.issue.labels.*.name, 'agent:fix') ||
-       contains(github.event.issue.labels.*.name, 'agent:verify') ||
-       contains(github.event.issue.labels.*.name, 'agent:blocked') ||
-       contains(github.event.issue.labels.*.name, 'agent:decision'))
-    runs-on: ubuntu-latest
-    steps:
-      - name: 🔐 Check commenter permission
+      - name: 🔐 Check the labeler's permission
         id: perm
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          SENDER: ${{ github.event.sender.login }}
         run: |
-          PR=${{ github.event.issue.number }}
-          PERM=$(gh api "repos/${{ github.repository }}/collaborators/${COMMENT_AUTHOR}/permission" --jq .permission)
+          PERM=$(gh api "repos/${{ github.repository }}/collaborators/${SENDER}/permission" --jq .permission)
           if [ "$PERM" != "admin" ] && [ "$PERM" != "write" ]; then
-            gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ @${COMMENT_AUTHOR} doesn't have permission to direct the pipeline on this repo. Only \`/merge yes\`/\`/merge no\` from the pipeline owner is handled without write access."
+            gh issue comment ${{ github.event.issue.number }} --repo "${{ github.repository }}" --body "⚠️ @${SENDER} doesn't have permission to start an orchestrator conversation on this repo. Removing the label."
+            gh issue edit ${{ github.event.issue.number }} --repo "${{ github.repository }}" --remove-label "${{ env.ORCH_LABEL }}"
             echo "allowed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -872,110 +234,395 @@ jobs:
           git config --global user.name "${{ env.BOT_NAME }}"
           git config --global user.email "findlapmn@gmail.com"
 
-      - name: 🔀 Checkout PR branch
-        id: pr_branch
+      - name: 🌿 Ensure the orchestrator-data branch exists (idempotent)
+        # Covers the case where this issue is labeled before Bootstrap has ever run.
         if: steps.perm.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          PR=${{ github.event.issue.number }}
-          gh pr checkout "$PR" --repo "${{ github.repository }}"
-          echo "branch=$(git branch --show-current)" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --heads origin "${{ env.DATA_BRANCH }}" > /dev/null 2>&1; then
+            exit 0
+          fi
+          git checkout --orphan "${{ env.DATA_BRANCH }}"
+          git rm -rf . > /dev/null 2>&1 || true
+          jq -n '{delegated_prs: []}' > "${{ env.STATE_FILE }}"
+          git add "${{ env.STATE_FILE }}"
+          git commit -m "chore(orchestrator): initialize state"
+          git push origin "${{ env.DATA_BRANCH }}"
 
-      - name: 📝 Record the message and route it
+      - name: 👋 Welcome this issue as a new conversation
         if: steps.perm.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} --repo "${{ github.repository }}" --body "### 🧠 This is now a live orchestrator conversation
+          Comment here in plain language, same as any other orchestrator issue — this one has its
+          own independent history and its own tracked PRs, completely separate from any other
+          orchestrator conversation. Only repo collaborators with write/admin access can direct it."
+
+  # ============================================================================
+  # CONVERSE — the actual conversational turn (this is where the LLM runs)
+  # ============================================================================
+  converse:
+    name: 💬 Orchestrator Agent
+    # Only fires for comments on the dedicated orchestrator ISSUE (not a PR),
+    # never for the bot's own comments (no self-triggering loop).
+    # 👈 تم التعديل: تجاهل تعليقات البوت (mohamed-AFYU)
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request == null &&
+      github.event.comment.user.login != 'mohamed-AFYU' &&
+      contains(github.event.issue.labels.*.name, 'orchestrator')
+    runs-on: ubuntu-latest
+    concurrency:
+      group: orchestrator-converse-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: 🔐 Check commenter permission
+        id: perm
+        env:
+          # 👈 التعديل: استخدام PAT_TOKEN بدلاً من GITHUB_TOKEN 
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
         run: |
-          PR=${{ github.event.issue.number }}
-          BRANCH="${{ steps.pr_branch.outputs.branch }}"
+          PERM=$(gh api "repos/${{ github.repository }}/collaborators/${COMMENT_AUTHOR}/permission" --jq .permission)
+          if [ "$PERM" != "admin" ] && [ "$PERM" != "write" ]; then
+            gh issue comment ${{ github.event.issue.number }} --repo "${{ github.repository }}" --body "⚠️ @${COMMENT_AUTHOR} doesn't have permission to direct the orchestrator on this repo."
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "allowed=true" >> "$GITHUB_OUTPUT"
+
+      - name: 🔀 Checkout default branch (needed for opencode.json)
+        # Deliberately NOT orchestrator-data — that branch holds only the
+        # tracking file and has no opencode.json, which is exactly what caused
+        # "Model not found" errors here before. The state file itself is read
+        # and written via the Contents API instead (see the prompt below), so
+        # this job never needs to check out orchestrator-data at all.
+        uses: actions/checkout@v4
+        if: steps.perm.outputs.allowed == 'true'
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: 🔎 Verify Bootstrap has run
+        id: bootstrap_check
+        if: steps.perm.outputs.allowed == 'true'
+        env:
+          # 👈 استخدام GITHUB_TOKEN الافتراضي
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git ls-remote --exit-code --heads origin "${{ env.DATA_BRANCH }}" > /dev/null 2>&1; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            gh issue comment ${{ github.event.issue.number }} --repo "${{ github.repository }}" --body "⚠️ لسه محتاج تشغّل الـ workflow ده مرة واحدة يدوي عن طريق workflow_dispatch (Bootstrap) قبل ما أقدر أرد — مفيش orchestrator-data branch لسه."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: ⚙️ Configure Git
+        if: steps.perm.outputs.allowed == 'true' && steps.bootstrap_check.outputs.ready == 'true'
+        run: |
+          git config --global user.name "${{ env.BOT_NAME }}"
+          git config --global user.email "findlapmn@gmail.com"
+
+      - name: 🧠 Run Orchestrator Agent
+        if: steps.perm.outputs.allowed == 'true' && steps.bootstrap_check.outputs.ready == 'true'
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+          HUMAN_LOGIN: ${{ github.event.comment.user.login }}
+        with:
+          model: ninerouter/kc/poolside/laguna-s-2.1:free
+          use_github_token: true
+          prompt: |
+            You are the ORCHESTRATOR — a conversational manager sitting on top of an existing,
+            fully automated multi-agent pipeline defined in .github/workflows/opencode.yml in this
+            same repository. You talk to a human in ONE persistent GitHub issue (this one:
+            #${{ github.event.issue.number }} in ${{ github.repository }}), and you delegate work to
+            that pipeline. You are the "smart" coordination layer; the pipeline underneath you is a
+            deterministic label-based state machine that does the actual code review/fixing.
+
+            The human currently talking to you is @${{ env.HUMAN_LOGIN }}.
+
+            READ FIRST, ALWAYS, BEFORE DECIDING ANYTHING:
+            1. `gh issue view ${{ github.event.issue.number }} --repo ${{ github.repository }} --comments`
+               — this IS your entire memory of this conversation. Read all of it, not just the newest
+               comment, since you have no memory outside of it.
+            2. Your tracking file lives on a DIFFERENT branch (${{ env.DATA_BRANCH }}) than the one
+               checked out in this workspace, so read it via the Contents API, not from disk:
+                 gh api "repos/${{ github.repository }}/contents/${{ env.STATE_FILE }}?ref=${{ env.DATA_BRANCH }}" --jq '.content' | base64 -d
+               It's a JSON object with a `delegated_prs` array of `{"pr": <number>, "note": <string>,
+               "issue": <number>}` for PRs you're tracking. This file is SHARED across every orchestrator
+               conversation in this repo (there can be several, each in its own issue) — the `"issue"` field
+               is what separates them. When the human asks a general "what's going on" / "status update"
+               question with no PR named, only consider entries where `"issue" == ${{ github.event.issue.number }}`
+               (this conversation's own issue) — PRs delegated from a DIFFERENT issue are not yours to report
+               on here, even though they're in the same file. Entries with no `"issue"` field at all are
+               legacy — from before this file tracked which conversation delegated what — treat those as
+               belonging to this issue too rather than hiding them. ALWAYS live-query GitHub for the actual
+               current state of any PR (see below), never trust the note text as up to date.
+
+            YOUR CAPABILITIES (you have real shell + gh CLI access — use it directly):
+
+            - Start a brand-new feature build:
+                gh workflow run ${{ env.PIPELINE_WORKFLOW }} --repo ${{ github.repository }} \
+                  -f prompt="<the human's request, cleaned up for grammar/clarity ONLY>" \
+                  -f max_cycles="15" \
+                  -f model="ninerouter/kc/poolside/laguna-s-2.1:free" \
+                  -f origin_issue="${{ github.event.issue.number }}"
+              The `origin_issue` input is how the pipeline knows to relay updates back to THIS conversation
+              specifically (there may be others open in parallel, in other issues) — always pass it, every
+              time, for every build you kick off.
+              CRITICAL: you have NOT read this repository's code — you only have the issue conversation and
+              your tracking file. Do NOT invent or add architecture, UI layer, storage choice, or any
+              specific technical design of your own when writing that prompt, even if the human's request is
+              high-level (words like "system", "admin panel", "dashboard" describe an outcome, not an
+              architecture). Forward what they actually asked for, lightly cleaned up, and trust the Build
+              Agent to work out HOW to build it — it checks out the real repo and is explicitly instructed to
+              match existing conventions before writing anything. The one thing you SHOULD do yourself: if
+              the request is ambiguous about WHAT the human wants (not how it should be built), ask them ONE
+              clarifying question in your reply instead of dispatching a guess.
+              This is fire-and-forget: workflow_dispatch does not hand you back a PR number. Tell the human
+              you've kicked it off, that the Build Agent will read the actual codebase first and post its
+              concrete plan — including the existing patterns it followed — in its first PR comment, and
+              that's the moment to catch any misunderstanding early. You'll post again the moment a PR shows
+              up — a separate, deterministic job in this same workflow (track_new_builds) does that
+              automatically, you do not need to poll for it.
+
+            - Point an EXISTING PR at review or a fix. First resolve exactly which PR they mean:
+                - A bare number is the PR number.
+                - A branch name, or a full github.com/.../tree/<branch> URL (strip everything up to and
+                  including "/tree/" to get the branch name), needs resolving:
+                    gh pr list --repo ${{ github.repository }} --head "<branch>" --state all --json number --jq '.[0].number'
+                - Before doing anything else to it, check it isn't already merged:
+                    gh pr view <PR> --repo ${{ github.repository }} --json state --jq .state
+                  If state is "MERGED", its branch was already deleted by this pipeline's merge_gate —
+                  there is nothing left to resume. Tell the human that plainly and suggest starting a
+                  fresh build instead. Do not attempt anything further on a merged PR.
+                - To ask for a full review pass, swap its labels:
+                    gh pr edit <PR> --repo ${{ github.repository }} --remove-label agent:fix --remove-label agent:verify --remove-label agent:decision --remove-label agent:blocked 2>/dev/null || true
+                    gh pr edit <PR> --repo ${{ github.repository }} --add-label agent:review
+                - Record what the human actually wants in that PR's OWN state file, WITHOUT touching any
+                  code, using the Contents API (do not `git checkout` a second branch in this workspace).
+                  Also set `origin_issue` to THIS conversation's issue number — this PR may have been
+                  delegated from a different issue originally, or from none at all, but from now on
+                  updates should come back here, to whoever is actually talking to it:
+                    BRANCH=$(gh pr view <PR> --repo ${{ github.repository }} --json headRefName --jq .headRefName)
+                    gh api "repos/${{ github.repository }}/contents/.github/agent-state.json?ref=$BRANCH" --jq '.content' | base64 -d > /tmp/pr-state.json
+                    jq --arg author "${{ env.HUMAN_LOGIN }}" --arg body "<their request, in your own words>" \
+                      --arg issue "${{ github.event.issue.number }}" \
+                      '.human_messages = ((.human_messages // []) + [{"author":$author,"body":$body,"delivered":false}])
+                       | .origin_issue = $issue' \
+                      /tmp/pr-state.json > /tmp/pr-state-new.json
+                    SHA=$(gh api "repos/${{ github.repository }}/contents/.github/agent-state.json?ref=$BRANCH" --jq '.sha')
+                    gh api "repos/${{ github.repository }}/contents/.github/agent-state.json" -X PUT \
+                      -f message="chore(pipeline): orchestrator relayed a human message" \
+                      -f content="$(base64 -w0 /tmp/pr-state-new.json)" -f sha="$SHA" -f branch="$BRANCH"
+                  If that PR has no .github/agent-state.json at all (not a pipeline-managed PR), say so
+                  and ask the human whether they want you to add the "agent:review" label anyway (the
+                  pipeline's Review Agent will still run and read the task from the PR description).
+                - Add this PR's number to your OWN tracking file (update its "issue" field to this
+                  conversation if it's already present but claimed by a different one; add it fresh with
+                  this issue's number if it isn't present at all), via the Contents API — the SAME pattern
+                  as above, targeting ${{ env.STATE_FILE }} on the ${{ env.DATA_BRANCH }} branch instead of
+                  the PR's agent-state.json:
+                    gh api "repos/${{ github.repository }}/contents/${{ env.STATE_FILE }}?ref=${{ env.DATA_BRANCH }}" --jq '.content' | base64 -d > /tmp/orch-state.json
+                    jq --argjson pr "<PR>" --arg note "<short note>" --argjson issue "${{ github.event.issue.number }}" \
+                      '.delegated_prs = ((.delegated_prs // []) | map(select(.pr != $pr))) + [{"pr":$pr,"note":$note,"issue":$issue}]' \
+                      /tmp/orch-state.json > /tmp/orch-state-new.json
+                    SHA=$(gh api "repos/${{ github.repository }}/contents/${{ env.STATE_FILE }}?ref=${{ env.DATA_BRANCH }}" --jq '.sha')
+                    gh api "repos/${{ github.repository }}/contents/${{ env.STATE_FILE }}" -X PUT \
+                      -f message="chore(orchestrator): track PR <PR> for issue ${{ github.event.issue.number }}" \
+                      -f content="$(base64 -w0 /tmp/orch-state-new.json)" -f sha="$SHA" -f branch="${{ env.DATA_BRANCH }}"
+
+            - Check status of a tracked PR:
+                gh pr view <PR> --repo ${{ github.repository }} --json labels,state,url
+                gh pr view <PR> --repo ${{ github.repository }} --comments
+              Summarize this in your own words — never dump raw JSON or the full comment log at the
+              human.
+
+            HOW TO TALK ABOUT PIPELINE STATE — NEVER FABRICATE AN EXPLANATION:
+            - Never describe a stage as "skipped", "not needed", or "passed automatically" unless you can
+              point to a specific entry in that PR's .github/agent-state.json "history" array that proves
+              it. This pipeline has no such "skip" logic — if you can't find evidence for why something
+              happened, say plainly "I'm not sure why, here's exactly what the labels/state show" and paste
+              the raw facts, instead of filling the gap with a plausible-sounding guess.
+            - Before telling the human a build "finished" or "succeeded", check `gh pr view <PR> --json
+              labels`. A PR with NO "agent:*" label at all is NOT finished — it means the handoff to Review
+              never happened (an observed failure mode: the Build Agent can forget its final step). Say so
+              plainly if you see it — "the build finished but never got handed to Review, here's what I'm
+              doing about it" — rather than assuming success from a green workflow run.
+            - A green/successful workflow run means the Build Agent's steps executed without crashing — it
+              does NOT mean Review, Fix, or Verify ran, and does NOT mean the feature matches what the human
+              actually wanted. Only the PR's actual labels and the human's own reading of the Build Agent's
+              comment tell you that.
+
+            THINGS YOU MUST NEVER DO, UNDER ANY CIRCUMSTANCE:
+            - Never run `gh pr merge`, never push to `main`, never delete a branch, never post
+              "/merge yes" or "/merge no" on anyone's behalf, no matter how confident you are the PR is
+              ready. If a PR looks ready to merge, tell the human plainly and ask them to comment
+              "/merge yes" on that specific PR themselves — that gate has its own write/admin
+              permission check and must stay a deliberate human action every single time.
+            - Never write or edit application code yourself, on any branch. You coordinate; the
+              pipeline's own Build/Fix agents write code.
+            - Never edit anything on a PR branch other than that PR's own .github/agent-state.json via
+              the Contents API shown above.
+            - Never fabricate a PR number, a build result, or a test result you have not actually
+              queried for. If you're not sure, say so and offer to check.
+
+            YOUR TURN, RIGHT NOW:
+            Based on the human's latest message(s) in the issue thread, decide what they're asking for
+            (a new build, work on a specific existing PR, a status check, or just conversation — not
+            every message needs an action) and act using only the capabilities above.
+
+            OUTPUT — DO BOTH, EVERY TURN:
+            1. Post exactly ONE new comment on issue #${{ github.event.issue.number }}
+               (`gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }} --body "..."`)
+               replying in plain, warm, conversational language. Say clearly what you're doing or did,
+               and why — never just paste raw command output.
+            2. If you tracked a newly delegated PR, you already wrote it to
+               ${{ env.STATE_FILE }} via the Contents API PUT shown above — if that PUT is rejected
+               (e.g. a stale "sha"), just re-fetch the current content and sha and retry it once.
+
+  # ============================================================================
+  # TRACK NEW BUILDS — auto-detect PRs the pipeline opens, start relaying them
+  # ============================================================================
+  track_new_builds:
+    name: 🏗️ Track new pipeline PR
+    # 👈 تم التعديل: استخدام اسم البوت mohamed-AFYU
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.action == 'opened' &&
+      github.event.pull_request.user.login == 'mohamed-AFYU'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: orchestrator-data-write
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DATA_BRANCH }}
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: ⚙️ Configure Git
+        run: |
+          git config --global user.name "${{ env.BOT_NAME }}"
+          git config --global user.email "findlapmn@gmail.com"
+
+      - name: 📌 Track this PR + notify the right orchestrator issue
+        env:
+          # 👈 استخدام GITHUB_TOKEN الافتراضي
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          TITLE="${{ github.event.pull_request.title }}"
+          URL="${{ github.event.pull_request.html_url }}"
+          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
+
+          # This PR's own .github/agent-state.json carries which orchestrator issue asked for it
+          # (set at Build time from the "origin_issue" workflow_dispatch input — see opencode.yml).
+          # Read it via the Contents API so we don't need a second checkout of the PR branch.
+          ORIGIN_ISSUE=$(gh api "repos/${{ github.repository }}/contents/.github/agent-state.json?ref=$HEAD_BRANCH" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | jq -r '.origin_issue // empty' 2>/dev/null || true)
+
+          if [ -n "$ORIGIN_ISSUE" ]; then
+            # Confirm it's still a live orchestrator conversation before relaying to it.
+            STILL_VALID=$(gh issue view "$ORIGIN_ISSUE" --repo "${{ github.repository }}" --json state,labels --jq \
+              '.state == "OPEN" and ([.labels[].name] | any(. == "${{ env.ORCH_LABEL }}"))' 2>/dev/null || echo "false")
+            if [ "$STILL_VALID" != "true" ]; then
+              ORIGIN_ISSUE=""
+            fi
+          fi
+
+          if [ -z "$ORIGIN_ISSUE" ]; then
+            # No (valid) origin recorded — this was likely dispatched manually from the Actions tab,
+            # not through a conversation. Fall back to whichever orchestrator issue is oldest/first,
+            # same behavior as before this file tracked origins.
+            ORIGIN_ISSUE=$(gh issue list --repo "${{ github.repository }}" --label "${{ env.ORCH_LABEL }}" --state open --json number --jq '.[0].number // empty')
+          fi
+
+          if [ -z "$ORIGIN_ISSUE" ]; then
+            echo "ℹ️ No orchestrator issue found at all — nothing to relay to. Skipping."
+            exit 0
+          fi
 
           for ATTEMPT in 1 2 3 4 5; do
-            jq --arg author "$COMMENT_AUTHOR" --arg body "$COMMENT_BODY" \
-              '.human_messages = ((.human_messages // []) + [{"author":$author,"body":$body,"delivered":false}])' \
+            ALREADY=$(jq --argjson pr "$PR" '(.delegated_prs // []) | any(.pr == $pr)' "$STATE_FILE")
+            if [ "$ALREADY" = "true" ]; then
+              break
+            fi
+
+            jq --argjson pr "$PR" --arg note "auto-tracked new build" --argjson issue "$ORIGIN_ISSUE" \
+              '.delegated_prs = ((.delegated_prs // []) + [{"pr":$pr,"note":$note,"issue":$issue}])' \
               "$STATE_FILE" > /tmp/state.json && mv /tmp/state.json "$STATE_FILE"
             git add "$STATE_FILE"
-            git commit -m "chore(pipeline): record human message from $COMMENT_AUTHOR"
+            git commit -m "chore(orchestrator): track PR #$PR for issue #$ORIGIN_ISSUE"
 
-            if git push origin "$BRANCH"; then
+            if git push origin "${{ env.DATA_BRANCH }}"; then
               break
             fi
 
             echo "⚠️ Push rejected (attempt $ATTEMPT/5) — refetching and retrying..."
             git reset --soft HEAD~1
-            git fetch origin "$BRANCH"
-            git reset --hard "origin/$BRANCH"
+            git fetch origin "${{ env.DATA_BRANCH }}"
+            git reset --hard "origin/${{ env.DATA_BRANCH }}"
             sleep $((RANDOM % 3 + 1))
-
-            if [ "$ATTEMPT" -eq 5 ]; then
-              echo "❌ Failed to record human message after 5 attempts." >&2
-              gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ Couldn't record your message due to a write conflict — please try again in a moment. @${COMMENT_AUTHOR}"
-              exit 1
-            fi
           done
 
-          PAUSED_LABEL=$(gh pr view "$PR" --repo "${{ github.repository }}" --json labels --jq \
-            '[.labels[].name] | map(select(. == "agent:blocked" or . == "agent:decision")) | .[0] // empty')
-
-          if [ -n "$PAUSED_LABEL" ]; then
-            gh pr edit "$PR" --repo "${{ github.repository }}" --remove-label "$PAUSED_LABEL" --add-label "agent:fix"
-            gh pr comment "$PR" --repo "${{ github.repository }}" --body "👋 Got it @${COMMENT_AUTHOR} — picking this up now. The Fix Agent will reply here once it's looked at your message."
-          else
-            gh pr comment "$PR" --repo "${{ github.repository }}" --body "👋 Noted @${COMMENT_AUTHOR} — the pipeline is mid-cycle right now; the next agent that runs will read and reply to your message."
-          fi
+          gh issue comment "$ORIGIN_ISSUE" --repo "${{ github.repository }}" --body "🏗️ New PR opened: [#$PR]($URL) — $TITLE. I'll relay updates on it here."
 
   # ============================================================================
-  # STAGE 7 — CHAT (pipeline already finished) — one-line notice instead of silence
+  # RELAY AGENT UPDATES — forward a delegated PR's agent comments into the chat
   # ============================================================================
-  chat_closed_notice:
-    name: 💬 Chat (pipeline finished)
+  relay_agent_updates:
+    name: 🔔 Relay agent update
+    # Only for comments made BY the bot on a PR (the pipeline agents reporting
+    # in), never for human comments on PRs — those are the pipeline's own
+    # "chat" job's job (see opencode.yml), not this one's.
+    # 👈 تم التعديل: استخدام اسم البوت mohamed-AFYU
     if: |
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request != null &&
-      github.event.comment.user.login != 'mohamed-AFYU' &&
-      !startsWith(github.event.comment.body, '/merge yes') &&
-      !startsWith(github.event.comment.body, '/merge no') &&
-      (contains(github.event.issue.labels.*.name, 'agent:merged') ||
-       contains(github.event.issue.labels.*.name, 'agent:closed-by-human'))
+      github.event.comment.user.login == 'mohamed-AFYU'
     runs-on: ubuntu-latest
     steps:
-      - name: 💬 Let the commenter know the pipeline already ended
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DATA_BRANCH }}
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: 🔔 Relay if this PR is delegated
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          # 👈 استخدام GITHUB_TOKEN الافتراضي
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR=${{ github.event.issue.number }}
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body "ℹ️ This PR's pipeline already finished (merged or closed) — I'm not picking up new instructions here. Start a new run with workflow_dispatch if you'd like more changes."
 
-  # ============================================================================
-  # STAGE 8 — RECONCILE (scheduled safety net, independent of any single run)
-  # ============================================================================
-  # Runs every 30 minutes regardless of what else is happening. Finds any OPEN PR authored by the
-  # bot that has no "agent:*" label at all — meaning some handoff was dropped, by any stage, for any
-  # reason (an LLM forgetting its last step, a runner crashing mid-job, etc.) — and recovers it the
-  # same way the in-job safety net in the Build stage does. That in-job step only covers the moment
-  # right after Build; this job is the general backstop so a PR can never go silently missing.
-  reconcile:
-    name: 🩺 Reconcile stalled PRs
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    steps:
-      - name: 🩺 Find bot PRs with no pipeline label and recover them
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          PRS=$(gh pr list --repo "${{ github.repository }}" --author "${{ env.BOT_NAME }}" --state open --json number --jq '.[].number')
+          ENTRY=$(jq --argjson pr "$PR" '(.delegated_prs // []) | map(select(.pr == $pr)) | .[0] // empty' "$STATE_FILE")
+          if [ -z "$ENTRY" ]; then
+            echo "ℹ️ PR #$PR isn't delegated by the orchestrator — nothing to relay."
+            exit 0
+          fi
 
-          for PR in $PRS; do
-            HAS_PIPELINE_LABEL=$(gh pr view "$PR" --repo "${{ github.repository }}" --json labels --jq \
-              '[.labels[].name] | any(. == "agent:review" or . == "agent:fix" or . == "agent:verify" or . == "agent:decision" or . == "agent:blocked" or . == "agent:merged" or . == "agent:closed-by-human")')
+          # Route to whichever issue actually delegated this PR — legacy entries with no "issue"
+          # field fall back to the oldest open orchestrator issue, same as before this existed.
+          TARGET_ISSUE=$(echo "$ENTRY" | jq -r '.issue // empty')
+          if [ -z "$TARGET_ISSUE" ]; then
+            TARGET_ISSUE=$(gh issue list --repo "${{ github.repository }}" --label "${{ env.ORCH_LABEL }}" --state open --json number --jq '.[0].number // empty')
+          fi
+          if [ -z "$TARGET_ISSUE" ]; then
+            exit 0
+          fi
 
-            if [ "$HAS_PIPELINE_LABEL" != "true" ]; then
-              echo "⚠️ PR #$PR has no pipeline label — recovering."
-              gh pr edit "$PR" --repo "${{ github.repository }}" --add-label "agent:review"
-              gh pr comment "$PR" --repo "${{ github.repository }}" --body "### 🩺 Reconciliation
-          This PR was open with no pipeline label on it — a handoff was dropped somewhere along the way. I've
-          added \`agent:review\` to resume the Review → Fix → Verify → Decision loop automatically."
-            fi
-          done
+          # Only relay actual agent report comments (they always start with a "###" header) —
+          # skip routine chore commits/bookkeeping noise that might otherwise show up here.
+          BODY="${{ github.event.comment.body }}"
+          if [[ "$BODY" != "###"* ]]; then
+            echo "ℹ️ Not a report-style comment — skipping relay."
+            exit 0
+          fi
+
+          EXCERPT=$(printf '%s' "$BODY" | head -c 600)
+          gh issue comment "$TARGET_ISSUE" --repo "${{ github.repository }}" --body "🔔 Update on PR #$PR:
+
+          $EXCERPT
+
+          [View full comment](${{ github.event.comment.html_url }})"
