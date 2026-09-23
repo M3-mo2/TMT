@@ -4,5 +4,12 @@
   "cycle": 0,
   "status": "building",
   "findings": [],
-  "history": []
+  "history": [],
+  "human_messages": [
+    {
+      "author": "M3-mo2",
+      "body": "Make the process continue — review this PR, find and fix all its problems, and turn it into an excellent feature.",
+      "delivered": false
+    }
+  ]
 }
