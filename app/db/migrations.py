@@ -272,6 +272,34 @@ CREATE INDEX idx_notifications_unread ON notifications(owner_id, read_at, dismis
     WHERE read_at IS NULL AND dismissed = 0;
 """
 
+# v11: Backup Management — admin-side DB snapshots (backup_manager.py).
+# ``backups`` stores one row per snapshot; the binary dump is a separate file
+# under data/backups/. ``created_by`` is the admin_id that triggered the run
+# (admin-scoped, mirroring broadcasts.admin_id). The partial index
+# ``idx_backups_scheduled`` backs the sweeper's "what's due now" lookup so it
+# only scans scheduled rows (RULES §6: no SQLite-isms beyond the partial
+# index predicate, portable to PostgreSQL expression indexes).
+_V11 = """
+CREATE TABLE backups (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'manual',
+    scheduled_for TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    file_path TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_by INTEGER,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT
+);
+
+CREATE INDEX idx_backups_status ON backups(status);
+CREATE INDEX idx_backups_scheduled ON backups(status, scheduled_for)
+    WHERE status='scheduled';
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
@@ -283,6 +311,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (8, _V8),
     (9, _V9),
     (10, _V10),
+    (11, _V11),
 ]
 
 

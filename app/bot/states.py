@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from aiogram.fsm.state import State, StatesGroup
 
-__all__ = ["AddAccountFSM", "TransferFSM", "SettingsFSM"]
+__all__ = ["AddAccountFSM", "TransferFSM", "SettingsFSM", "BackupsFSM"]
 
 
 class AddAccountFSM(StatesGroup):
@@ -21,3 +21,11 @@ class TransferFSM(StatesGroup):
 
 class SettingsFSM(StatesGroup):
     value = State()
+
+
+class BackupsFSM(StatesGroup):
+    """Admin backup-creation wizard: ask for a label, then now/schedule."""
+
+    label = State()
+    pick = State()
+    scheduled_for = State()

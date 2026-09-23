@@ -50,11 +50,16 @@ class Config(BaseSettings):
     bcast_batch_size: int = Field(default=50, ge=1)
     bcast_sweep_interval: int = Field(default=30, ge=5)
 
+    # Backup Management — admin-side DB snapshots (no restart, offline-friendly)
+    backup_sweep_interval: int = Field(default=30, ge=5)
+    backup_keep_last: int = Field(default=10, ge=1)
+
     # Notification System — system-event alerts to bot operators (docs/notifications/)
     notify_on_user_join: bool = True       # DM every admin when a new user starts the bot
     notify_on_job_events: bool = True      # DM admins on job lifecycle (started/completed/failed/cancelled)
     notify_on_error: bool = True           # DM admins on FloodWait / PeerFlood / unexpected errors
     notify_on_broadcast_events: bool = True  # DM admins on broadcast lifecycle
+    notify_on_backup_events: bool = True   # DM admins on backup lifecycle (started/completed/failed/cancelled/restored)
 
     @model_validator(mode="after")
     def _normalize(self) -> Config:

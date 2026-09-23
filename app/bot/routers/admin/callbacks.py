@@ -69,6 +69,11 @@ NOTIFY_TOGGLE = f"{PREFIX}:notify:toggle:"
 BAK = f"{PREFIX}:bak"
 BAK_NEW = f"{PREFIX}:bak:new"
 BAK_OPEN = f"{PREFIX}:bak:v:"
+BAK_CANCEL = f"{PREFIX}:bak:cancel:"
+BAK_RESTORE = f"{PREFIX}:bak:restore:"
+BAK_RESTORE_OK = f"{PREFIX}:bak:restoreok:"
+BAK_RUN_NOW = f"{PREFIX}:bak:runnow:"
+BAK_PAGE = f"{PREFIX}:bak:p:"
 
 # search
 SEARCH = f"{PREFIX}:search"

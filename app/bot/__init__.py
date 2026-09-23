@@ -8,7 +8,8 @@ imports telethon directly; Telegram-facing work goes through core services
 and the tg modules passed in here.
 
 Workflow data keys: ``config``, ``db``, ``accounts``, ``jobs``, ``logins``,
-``pool``, ``reporter``, ``settings`` (UserSettings for transfer param overrides).
+``pool``, ``reporter``, ``settings`` (UserSettings for transfer param overrides),
+``backups`` (BackupManager | None).
 
 Admin access is determined by ``config.admin_ids`` — users whose Telegram id
 is in that list bypass the IsAdmin filter on the admin router.
@@ -30,6 +31,7 @@ from app.bot.routers.admin import router as admin_router
 from app.config import Config
 from app.core.account_service import AccountService
 from app.core.broadcast import Broadcaster
+from app.core.backup_manager import BackupManager
 from app.core.events import EventBus
 from app.core.job_manager import JobManager
 from app.core.notifications import NotificationService
@@ -54,6 +56,7 @@ def build_dispatcher(
     settings: UserSettings | None = None,
     broadcaster: Broadcaster | None = None,
     notifications: NotificationService | None = None,
+    backups: BackupManager | None = None,
 ) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
     dp["config"] = config
@@ -66,6 +69,7 @@ def build_dispatcher(
     dp["settings"] = settings
     dp["broadcaster"] = broadcaster
     dp["notifications"] = notifications if notifications is not None else None
+    dp["backups"] = backups if backups is not None else None
 
     dp.update.outer_middleware(UserGateMiddleware(db, bus=bus))
 

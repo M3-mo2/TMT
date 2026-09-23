@@ -962,3 +962,117 @@ async def is_notification_enabled(
     if row is None:
         return True
     return bool(row["enabled"])
+
+
+# ---------------------------------------------------------------- backups
+
+
+# Columns that ``set_backup_status`` is allowed to advance beyond ``status``
+# (mirrors ``_BCAST_COUNTER_COLUMNS`` on set_broadcast_status).
+_BACKUP_STATUS_COLUMNS: frozenset[str] = frozenset(
+    {
+        "file_path",
+        "size_bytes",
+        "error",
+        "started_at",
+        "finished_at",
+        "scheduled_for",
+    }
+)
+
+_BACKUP_STATUSES: frozenset[str] = frozenset(
+    {"pending", "scheduled", "running", "completed", "failed", "cancelled"}
+)
+
+
+async def create_backup(
+    db: Database,
+    *,
+    label: str,
+    kind: str = "manual",
+    scheduled_for: str | None = None,
+    admin_id: int | None = None,
+) -> int:
+    """Persist a new backup row.
+
+    ``kind`` is ``manual|scheduled|recurring``; a non-null ``scheduled_for``
+    means the row starts life in the ``scheduled`` status (ready for the
+    sweeper to promote), otherwise it is ``pending``. ``created_by`` records
+    the admin that triggered the run (admin-scoped, like broadcasts)."""
+    status = "scheduled" if scheduled_for is not None else "pending"
+    return await db.execute(
+        "INSERT INTO backups "
+        "(label, kind, scheduled_for, status, created_by, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (label, kind, scheduled_for, status, admin_id, now_iso()),
+    )
+
+
+async def get_backup(db: Database, backup_id: int) -> dict[str, Any] | None:
+    row = await db.fetch_one("SELECT * FROM backups WHERE id=?", (backup_id,))
+    return dict(row) if row else None
+
+
+async def list_backups(
+    db: Database, status: str | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Return backups newest-first, optionally filtered by status."""
+    if status is None:
+        rows = await db.fetch_all(
+            "SELECT * FROM backups ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)
+        )
+    else:
+        rows = await db.fetch_all(
+            "SELECT * FROM backups WHERE status=? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (status, limit),
+        )
+    return [dict(row) for row in rows]
+
+
+async def list_due_scheduled_backups(db: Database) -> list[dict[str, Any]]:
+    """Return backups with status='scheduled' whose scheduled_for <= now,
+    ordered by scheduled_for ASC. Called by the sweeper."""
+    rows = await db.fetch_all(
+        "SELECT * FROM backups "
+        "WHERE status='scheduled' AND scheduled_for <= ? "
+        "ORDER BY scheduled_for ASC",
+        (now_iso(),),
+    )
+    return [dict(row) for row in rows]
+
+
+async def set_backup_status(
+    db: Database,
+    backup_id: int,
+    status: str,
+    **counters: Any,
+) -> None:
+    """Update ``backups.status`` plus any allowed counter columns.
+
+    Keyword arguments are validated against ``_BACKUP_STATUS_COLUMNS`` so a
+    typo surfaces immediately instead of silently doing nothing (mirrors
+    ``set_broadcast_status``). Unknown statuses raise ``ValueError``."""
+    if status not in _BACKUP_STATUSES:
+        raise ValueError(f"Unknown backup status: {status}")
+    sets: list[str] = ["status=?"]
+    params: list[Any] = [status]
+    for col, val in counters.items():
+        if col not in _BACKUP_STATUS_COLUMNS:
+            raise ValueError(f"Unknown backup column for set_backup_status: {col}")
+        sets.append(f"{col}=?")
+        params.append(val)
+    params.append(backup_id)
+    await db.execute(
+        f"UPDATE backups SET {', '.join(sets)} WHERE id=?", params
+    )
+
+
+async def count_backups(db: Database, status: str | None = None) -> int:
+    if status is None:
+        row = await db.fetch_one("SELECT COUNT(*) AS c FROM backups")
+    else:
+        row = await db.fetch_one(
+            "SELECT COUNT(*) AS c FROM backups WHERE status=?", (status,)
+        )
+    return int(row["c"]) if row else 0
