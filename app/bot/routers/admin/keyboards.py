@@ -4,7 +4,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.bot.routers.admin import callbacks as C
 from app.core.broadcast_models import AudienceFilter
-from app.bot.texts import esc as _esc, user_full_name
+from app.bot.texts import esc as _esc, user_full_name, BUT_CLOSE, BUT_TICKET_DETAIL
 
 
 def _btn(text: str, data: str) -> InlineKeyboardButton:
@@ -25,6 +25,9 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
             ],
             [
                 _btn("🔔 الإشعارات", C.NOTIFY),
+            ],
+            [
+                _btn("🎫 التذاكر", C.TICKETS),
             ],
             [
                 _btn("⚙️ الإعدادات", C.SETTINGS),
@@ -261,4 +264,72 @@ def notify_settings_kb(admin_id: int) -> InlineKeyboardMarkup:
         rows.append([_btn(label, f"{C.NOTIFY_TOGGLE}{et}")])
     rows.append([_btn("✓ All Read", C.NOTIFY_MARK_ALL)])
     rows.append([_btn("› رجوع", C.MENU)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------- tickets
+
+
+_TICKET_STATUS_FILTERS = [
+    ("كل التذاكر", C.TICKETS_ALL),
+    ("مفتوحة", C.TICKETS_OPEN),
+    ("قيد المعالجة", C.TICKETS_IN_PROGRESS),
+    ("مغلقة", C.TICKETS_CLOSED),
+]
+
+
+def tickets_status_filter_kb(current: str | None) -> InlineKeyboardMarkup:
+    """Status filter buttons for the admin ticket list."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for label, data in _TICKET_STATUS_FILTERS:
+        marker = "✓ " if data == current else ""
+        rows.append([_btn(f"{marker}{label}", data)])
+    rows.append([_btn("› رجوع", C.MENU)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_tickets_list_kb(tickets: list[dict]) -> InlineKeyboardMarkup:
+    """Inline keyboard for the admin ticket list: one button per ticket + filter."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for t in tickets:
+        rows.append(
+            [_btn(f"› #{t['id']}", f"{C.TICKETS_OPEN_TICKET}{t['id']}")]
+        )
+    rows.append([_btn("› رجوع", C.MENU)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_ticket_detail_kb(ticket_id: int, status: str) -> InlineKeyboardMarkup:
+    """Action buttons for the admin ticket detail view.
+
+    Includes: change status (inline dropdown), set priority, reply to user,
+    and close ticket."""
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([_btn("🔄 تغيير الحالة", f"{C.TICKETS_STATUS}{ticket_id}")])
+    rows.append([
+        _btn("📊 أولوية: منخفضة", f"{C.TICKETS_PRIORITY}{ticket_id}:low"),
+        _btn("📊 أولوية: عادية", f"{C.TICKETS_PRIORITY}{ticket_id}:normal"),
+        _btn("📊 أولوية: عالية", f"{C.TICKETS_PRIORITY}{ticket_id}:high"),
+    ])
+    rows.append([
+        _btn("📨 رد على المستخدم", f"{C.TICKETS_REPLY}{ticket_id}"),
+        _btn(BUT_CLOSE, f"{C.TICKETS_CLOSE}{ticket_id}"),
+    ])
+    rows.append([_btn(BUT_TICKET_DETAIL, f"{C.TICKETS_OPEN_TICKET}{ticket_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ticket_status_change_kb(ticket_id: int, current_status: str) -> InlineKeyboardMarkup:
+    """Inline keyboard for changing a ticket's status."""
+    statuses = [
+        ("مفتوحة", "open"),
+        ("قيد المعالجة", "in_progress"),
+        ("تم الحل", "resolved"),
+        ("مغلقة", "closed"),
+    ]
+    rows: list[list[InlineKeyboardButton]] = []
+    for label, value in statuses:
+        marker = "✓ " if value == current_status else ""
+        rows.append([_btn(f"{marker}{label}", f"{C.TICKETS_STATUS}{ticket_id}:{value}")])
+    rows.append([_btn("› رجوع", f"{C.TICKETS_OPEN_TICKET}{ticket_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

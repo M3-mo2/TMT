@@ -54,9 +54,9 @@ def test_build_dispatcher_wires_everything() -> None:
     # user gate registered as outer middleware on Update
     middleware = dp.update.outer_middleware
     assert any(isinstance(getattr(m, "__self__", m), UserGateMiddleware) for m in middleware)
-    # routers included: accounts, transfers, jobs, settings, admin, common
+    # routers included: accounts, transfers, jobs, settings, tickets, admin, common
     names = [r.name for r in dp.sub_routers]
-    assert names == ["accounts", "transfers", "jobs", "settings", "admin", "common"]
+    assert names == ["accounts", "transfers", "jobs", "settings", "tickets", "admin", "common"]
 
 
 # ---------------------------------------------------------------- gate middleware

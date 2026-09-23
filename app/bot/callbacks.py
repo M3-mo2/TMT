@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from aiogram.filters.callback_data import CallbackData
 
-__all__ = ["MenuCB", "AccountCB", "TransferCB", "JobCB", "SettingsCB", "GateCB"]
+__all__ = ["MenuCB", "AccountCB", "TransferCB", "JobCB", "SettingsCB", "GateCB", "TicketCB"]
 
 
 class MenuCB(CallbackData, prefix="menu"):
-    action: str  # "main" | "accounts" | "transfers" | "help"
+    action: str  # "main" | "accounts" | "transfers" | "help" | "jobs" | "tickets"
 
 
 class AccountCB(CallbackData, prefix="acct"):
@@ -37,3 +37,8 @@ class SettingsCB(CallbackData, prefix="set"):
 
 class GateCB(CallbackData, prefix="gate"):
     action: str  # "verify"
+
+
+class TicketCB(CallbackData, prefix="tkt"):
+    action: str  # "view" | "create" | "reply" | "confirm_create" | "confirm_reply" | "back"
+    ticket_id: int = 0

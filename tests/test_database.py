@@ -15,14 +15,15 @@ from app.db.migrations import _V1, _split_statements
 
 async def test_connect_applies_migrations(db: Database) -> None:
     rows = await db.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
-    assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     tables = {
         r["name"]
         for r in await db.fetch_all(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    assert {"users", "accounts", "jobs", "audit_log", "channels", "schema_migrations"} <= tables
+    assert {"users", "accounts", "jobs", "audit_log", "channels", "schema_migrations",
+            "tickets", "ticket_messages"} <= tables
 
 
 async def test_migration_v4_adds_user_name_columns(db: Database) -> None:
@@ -40,7 +41,7 @@ async def test_reconnect_is_idempotent(tmp_path: Path) -> None:
     await db2.connect()
     try:
         rows = await db2.fetch_all("SELECT version FROM schema_migrations")
-        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     finally:
         await db2.close()
 
@@ -154,7 +155,7 @@ async def test_v1_database_upgrades_to_v2_preserving_history(tmp_path: Path) -> 
     await db.connect()
     try:
         rows = await db.fetch_all("SELECT version FROM schema_migrations ORDER BY version")
-        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert [r["version"] for r in rows] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         job = await db.fetch_one(
             "SELECT account_id, status, invited FROM jobs WHERE id=9"
         )
@@ -282,3 +283,67 @@ async def test_migration_v10_defaults(db: Database) -> None:
     assert row["dismissed"] == 0
     assert row["read_at"] is None
     assert row["data"] == "{}"
+
+
+# ---------------------------------------------------------------- v11: tickets
+
+
+async def test_migration_v11_creates_ticket_tables(db: Database) -> None:
+    tables = {
+        r["name"]
+        for r in await db.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    assert "tickets" in tables
+    assert "ticket_messages" in tables
+    cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(tickets)")}
+    assert {"id", "owner_id", "subject", "priority", "status", "created_at", "updated_at"} <= cols
+    cols = {c["name"] for c in await db.fetch_all("PRAGMA table_info(ticket_messages)")}
+    assert {"id", "ticket_id", "sender_id", "sender_role", "body", "created_at"} <= cols
+
+
+async def test_migration_v11_defaults(db: Database) -> None:
+    await db.execute("INSERT INTO users (id, created_at, updated_at) VALUES (1, 't', 't')")
+    await db.execute(
+        "INSERT INTO tickets (owner_id, subject, created_at, updated_at) VALUES (1, 'T', 't', 't')"
+    )
+    row = await db.fetch_one("SELECT priority, status FROM tickets WHERE owner_id=1")
+    assert row is not None
+    assert row["priority"] == "normal"
+    assert row["status"] == "open"
+
+
+async def test_migration_v11_foreign_keys(db: Database) -> None:
+    """ticket_messages.ticket_id FK references tickets.id with ON DELETE CASCADE."""
+    await db.execute("INSERT INTO users (id, created_at, updated_at) VALUES (1, 't', 't')")
+    await db.execute(
+        "INSERT INTO tickets (owner_id, subject, created_at, updated_at) VALUES (1, 'T', 't', 't')"
+    )
+    ticket_id = (await db.fetch_one("SELECT id FROM tickets"))["id"]
+    await db.execute(
+        "INSERT INTO ticket_messages (ticket_id, sender_id, sender_role, body, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (ticket_id, 1, "user", "hello", "t"),
+    )
+    # Deleting the ticket cascades to messages
+    await db.execute("DELETE FROM tickets WHERE id=?", (ticket_id,))
+    msgs = await db.fetch_all("SELECT id FROM ticket_messages WHERE ticket_id=?", (ticket_id,))
+    assert msgs == []
+
+
+async def test_migration_v11_indexes(db: Database) -> None:
+    indexes = {
+        r["name"]
+        for r in await db.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_tickets%'"
+        )
+    }
+    assert {"idx_tickets_owner", "idx_tickets_status"} <= indexes
+    msg_indexes = {
+        r["name"]
+        for r in await db.fetch_all(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_ticket_messages%'"
+        )
+    }
+    assert {"idx_ticket_messages_ticket", "idx_ticket_messages_ticket_created"} <= msg_indexes

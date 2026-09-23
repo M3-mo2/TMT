@@ -1,35 +1,8 @@
 {
-  "task": "You are an automated code review/build agent. Explore the ENTIRE TMT codebase in repository M3-mo2/TMT and identify ALL gaps and missing pieces that prevent the project from being complete and production-ready. Categories to investigate: (1) CI/CD pipeline issues — broken workflows, missing automation, BOT_NAME mismatches, failed permission checks, label state-machine gaps; (2) Incomplete features — stubbed/todo/not-implemented functions, partially-built features; (3) Missing documentation — absent README sections, missing guides, absent API docs; (4) Missing or inadequate tests — missing test files for modules, low coverage areas; (5) Configuration/scaffolding gaps — missing setup.py/pyproject, missing requirements, missing .env, missing linting config, missing pre-commit hooks; (6) Code quality defects — TODO/FIXME markers, unused imports, security issues. Produce a single report file named GAPS_REPORT.md at the repository root. The report MUST be organized by category, each gap with a severity (Critical/High/Medium/Low) and a concrete description + file location when possible. Do NOT fix any gaps — only document them. Do NOT modify existing application code. Deliver only the new report file.",
+  "task": "Build a simple Ticket feature that integrates into the existing Telegram bot (aiogram 3), following all existing code conventions exactly. ABANDON the complex approach (web admin panel, /new_ticket bot commands, separate data layer). The bot is a basic Telegram bot — there is no web frontend. The 'homepage' is the main menu shown after /start (app/bot/routers/common.py), and the 'admin panel' is the inline-keyboard menu shown after /admin (app/bot/routers/admin/menu.py).\n\nIMPLEMENTATION SPEC:\n\n1. DATABASE (new migration v11 in app/db/migrations.py):\n   - tickets table: id, owner_id (FK users), subject (TEXT), priority (TEXT default 'normal': low/normal/high), status (TEXT default 'open': open/in_progress/resolved/closed), created_at, updated_at\n   - ticket_messages table: id, ticket_id (FK tickets), sender_id (Telegram user id), sender_role ('user'/'admin'), body (TEXT), created_at\n   - Owner-scoped access: users see only their tickets; admins see all.\n\n2. USER FACING (main menu):\n   - Add a '🎫 التذاكر' button to the main menu in app/bot/keyboards.py main_menu() and app/bot/callbacks.py (add MenuCB action 'tickets').\n   - New router app/bot/routers/tickets.py with handlers:\n     - List user's own tickets (open/in_progress) with inline buttons to open each ticket.\n     - Create ticket flow: ask for subject (one message), then message body (one message), then confirm. Use FSM StateGroup TicketFSM in states.py.\n     - View ticket detail: show subject, status, priority, full message thread (user messages right-aligned, admin messages left), and a '↢ رجوع' back button.\n   - Add '↢ تذاكري' reply button so users can reply to admin messages on a ticket (same flow: ask for message body, then confirm).\n   - Register the new router in app/bot/__init__.py build_dispatcher (before common.router, like other feature routers).\n   - Add a MenuCB action 'main' handler for the tickets back-button.\n\n3. ADMIN FACING (admin panel after /admin):\n   - Add a '🎫 التذاكر' button to the admin menu in app/bot/routers/admin/keyboards.py admin_menu_kb() and callbacks.py (new constant TICKETS).\n   - New router app/bot/routers/admin/tickets.py with handlers:\n     - List all tickets with status filter buttons (كل التذاكر / مفتوحة / قيد المعالجة / منتهية).\n     - View ticket detail: subject, status, priority, full message thread, and action buttons: change status (dropdown via inline buttons), set priority (low/normal/high), reply to user (sends a bot DM to the ticket owner via bot.send_message), close ticket.\n     - Use the same admin callback pattern (string constants with PREFIX in callbacks.py).\n   - Register the new admin router in app/bot/routers/admin/router.py (include_router before menu).\n\n4. TEXTS (app/bot/texts.py):\n   - Add Arabic button labels: BUT_TICKETS = '🎫 التذاكر' (main menu), BUT_TICKET_DETAIL = '↢ تذكرة' (admin), BUT_CLOSE = '× إغلاق', etc.\n   - Add Arabic message templates: M_TICKETS_TITLE, M_TICKETS_EMPTY, M_TICKET_CREATE_SUBJECT, M_TICKET_CREATE_BODY, M_TICKET_CREATED, M_TICKET_NOT_FOUND, M_TICKET_STATUS_OPEN, etc.\n   - Add render_ticket_card(job) or render_ticket_detail(ticket, messages) renderers following the existing render_* pattern.\n   - Add ticket_status_label() and ticket_priority_label() functions.\n   - All Arabic text, HTML parse mode, esc() for user content. No emoji in user-controlled strings, only in pre-defined Arabic UI text (matching existing pattern where existing buttons use icons like 🎫 👥 📊 etc).\n\n5. REPOSITORIES (app/db/repositories.py):\n   - create_ticket(db, owner_id, subject, priority='normal') -> ticket_id\n   - list_user_tickets(db, owner_id) -> list\n   - list_all_tickets(db, status_filter=None) -> list\n   - get_ticket(db, ticket_id, owner_id=None) -> ticket or None (admin can pass None)\n   - create_ticket_message(db, ticket_id, sender_id, sender_role, body) -> message_id\n   - list_ticket_messages(db, ticket_id) -> list\n   - update_ticket_status(db, ticket_id, status)\n   - update_ticket_priority(db, ticket_id, priority)\n   - set_ticket_updated(db, ticket_id)\n\n6. TESTS: Add tests covering repository functions (ticket CRUD), text rendering, and ticket status/priority labels. Follow existing test patterns in tests/.\n\n7. NO CHANGES to the existing transfer flow, accounts, jobs, or admin broadcast/stats/notifications features. This is an isolated, additive feature.",
   "max_cycles": 15,
-  "cycle": 3,
-  "status": "clean",
+  "cycle": 0,
+  "status": "building",
   "findings": [],
-  "history": [
-    {
-      "agent": "review",
-      "cycle": 0,
-      "result": "issues_found"
-    },
-    {
-      "agent": "review",
-      "cycle": 1,
-      "result": "issues_found"
-    },
-    {
-      "agent": "review",
-      "cycle": 2,
-      "result": "issues_found"
-    },
-    {
-      "agent": "review",
-      "cycle": 3,
-      "result": "clean"
-    },
-    {
-      "agent": "verify",
-      "cycle": 3,
-      "result": "clean"
-    }
-  ],
-  "human_messages": []
+  "history": []
 }

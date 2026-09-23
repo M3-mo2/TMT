@@ -4,12 +4,13 @@ from __future__ import annotations
 from aiogram import Router
 
 from app.bot.routers.admin.filters import IsAdmin
-from app.bot.routers.admin import menu, stats, broadcast, users, search, channels, backups, settings, notifications
+from app.bot.routers.admin import menu, stats, broadcast, users, search, channels, backups, settings, notifications, tickets
 
 router = Router(name="admin")
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
+router.include_router(tickets.router)
 router.include_router(menu.router)
 router.include_router(stats.router)
 router.include_router(broadcast.router)

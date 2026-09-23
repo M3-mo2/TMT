@@ -26,6 +26,7 @@ from app.bot.routers import common, transfers
 from app.bot.routers import accounts as accounts_router
 from app.bot.routers import jobs as jobs_router
 from app.bot.routers import settings as settings_router
+from app.bot.routers import tickets as tickets_router
 from app.bot.routers.admin import router as admin_router
 from app.config import Config
 from app.core.account_service import AccountService
@@ -74,6 +75,7 @@ def build_dispatcher(
     dp.include_router(transfers.router)
     dp.include_router(jobs_router.router)
     dp.include_router(settings_router.router)
+    dp.include_router(tickets_router.router)
     dp.include_router(admin_router)
     dp.include_router(common.router)
     return dp

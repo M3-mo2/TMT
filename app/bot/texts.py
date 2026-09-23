@@ -53,6 +53,21 @@ __all__ = [
     "render_notification_card", "render_notifications_list",
     "notification_event_label", "notification_severity_label",
     "render_notify_settings",
+    # tickets
+    "BUT_TICKETS", "BUT_TICKET_DETAIL", "BUT_CLOSE", "BUT_REPLY",
+    "BUT_CREATE_TICKET", "BUT_NEW_TICKET", "BUT_BACK_TICKETS",
+    "M_TICKETS_TITLE", "M_TICKETS_EMPTY", "M_TICKET_CREATE_SUBJECT",
+    "M_TICKET_CREATE_BODY", "M_TICKET_CREATED", "M_TICKET_NOT_FOUND",
+    "M_TICKET_STATUS_OPEN", "M_TICKET_STATUS_IN_PROGRESS",
+    "M_TICKET_STATUS_RESOLVED", "M_TICKET_STATUS_CLOSED",
+    "M_TICKET_PRIORITY_LOW", "M_TICKET_PRIORITY_NORMAL",
+    "M_TICKET_PRIORITY_HIGH",     "M_TICKET_REPLY_BODY", "M_TICKET_REPLY_CONFIRM",
+    "M_TICKET_CLOSED", "M_TICKET_CONFIRM_CREATE", "M_TICKET_REPLIED",
+    "ticket_status_label", "ticket_priority_label", "ticket_status_glyph",
+    "render_ticket_card", "render_ticket_detail",
+    "render_tickets_list", "render_admin_tickets_list",
+    "render_ticket_created", "render_ticket_create_confirm",
+    "render_ticket_reply_confirm",
 ]
 
 # ---------------------------------------------------------------- decorations
@@ -808,6 +823,201 @@ def render_notify_settings(
         lines.append("")
         for aid in admin_ids:
             lines.append(f"›|<code>{aid}</code>")
+    lines.append("")
+    lines.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- tickets
+
+
+# Buttons
+BUT_TICKETS = "🎫 التذاكر"
+BUT_TICKET_DETAIL = "↢ تذكرة"
+BUT_CLOSE = "× إغلاق"
+BUT_REPLY = "↢ رد"
+BUT_CREATE_TICKET = "↢ إنشاء تذكرة"
+BUT_NEW_TICKET = "🎫 تذكرة جديدة"
+BUT_BACK_TICKETS = "↢ تذاكري"
+
+# Messages
+M_TICKETS_TITLE = "<b>🎫 تذاكري</b>\n\nإدارة التذاكر والمراسلة بينك وبين الإدارة."
+M_TICKETS_EMPTY = "🎫 لا توجد لديك تذاكر نشطة.\nأنشئ تذكرة جديدة للبدء."
+M_TICKET_CREATE_SUBJECT = "↢ أرسل عنوان التذكرة (موضوع):\nمثال ← طلب دعم فني"
+M_TICKET_CREATE_BODY = "↢ أرسل نص الرسالة الأولى للتذكرة:\nمثال ← أحتاج مساعدة في النقل"
+M_TICKET_CREATED = "✅ تم إنشاء التذكرة <code>#{ticket_id}</code> بنجاح. الحالة: {status} | الأولوية: {priority}"
+M_TICKET_NOT_FOUND = "× لم يتم العثور على التذكرة."
+M_TICKET_CONFIRM_CREATE = (
+    "↢ <b>تأكيد إنشاء التذكرة؟</b>\n"
+    "العنوان: <code>{subject}</code>\n"
+    "الأولوية: <code>{priority}</code>\n"
+    "الرسالة: {body}\n"
+    "استخدم الأزرار للتنقل ↓"
+)
+M_TICKET_REPLY_BODY = "↢ أرسل ردك على التذكرة <code>#{ticket_id}</code>:"
+M_TICKET_REPLY_CONFIRM = (
+    "↢ <b>تأكيد الإرسال؟</b>\n"
+    "الرسالة: {body}\n"
+    "استخدم الأزرار للتنقل ↓"
+)
+M_TICKET_CLOSED = "✅ تم إغلاق التذكرة."
+M_TICKET_PRIORITY_SET = "✅ تم تحديد الأولوية."
+M_TICKET_STATUS_SET = "✅ تم تحديث الحالة."
+M_TICKET_REPLIED = "✅ تم إرسال ردك إلى صاحب التذكرة."
+
+
+def render_ticket_created(ticket_id: int, status: str, priority: str) -> str:
+    """Safely build the 'ticket created' success message."""
+    return (
+        f"✅ تم إنشاء التذكرة <code>#{ticket_id}</code> بنجاح. "
+        f"الحالة: {ticket_status_label(status)} | "
+        f"الأولوية: {ticket_priority_label(priority)}"
+    )
+
+
+def render_ticket_create_confirm(subject: str, priority: str, body: str) -> str:
+    """Safely build the create-confirm screen (user content escaped)."""
+    return (
+        "↢ <b>تأكيد إنشاء التذكرة؟</b>\n"
+        f"العنوان: <code>{esc(subject)}</code>\n"
+        f"الأولوية: <code>{ticket_priority_label(priority)}</code>\n"
+        f"الرسالة: {esc(body)}\n"
+        "استخدم الأزرار للتنقل ↓"
+    )
+
+
+def render_ticket_reply_confirm(body: str) -> str:
+    """Safely build the reply-confirm screen (user content escaped)."""
+    return (
+        "↢ <b>تأكيد الإرسال؟</b>\n"
+        f"الرسالة: {esc(body)}\n"
+        "استخدم الأزرار للتنقل ↓"
+    )
+
+
+# Status labels (default values from the migration)
+_TICKET_STATUS_AR: dict[str, str] = {
+    "open": "مفتوحة",
+    "in_progress": "قيد المعالجة",
+    "resolved": "تم الحل",
+    "closed": "مغلقة",
+}
+
+# Priority labels
+_TICKET_PRIORITY_AR: dict[str, str] = {
+    "low": "منخفضة",
+    "normal": "عادية",
+    "high": "عالية",
+}
+
+_TICKET_STATUS_GLYPH: dict[str, str] = {
+    "open": GLYPH_PASS,
+    "in_progress": GLYPH_INFO,
+    "resolved": GLYPH_PASS,
+    "closed": GLYPH_NEUTRAL,
+}
+
+
+def ticket_status_label(status: str) -> str:
+    """Arabic label for a ticket status."""
+    return _TICKET_STATUS_AR.get(status, status)
+
+
+def ticket_status_glyph(status: str) -> str:
+    """Glyph for a ticket status."""
+    return _TICKET_STATUS_GLYPH.get(status, GLYPH_UNKNOWN)
+
+
+def ticket_priority_label(priority: str) -> str:
+    """Arabic label for a ticket priority."""
+    return _TICKET_PRIORITY_AR.get(priority, priority)
+
+
+M_TICKET_STATUS_OPEN = "مفتوحة"
+M_TICKET_STATUS_IN_PROGRESS = "قيد المعالجة"
+M_TICKET_STATUS_RESOLVED = "تم الحل"
+M_TICKET_STATUS_CLOSED = "مغلقة"
+M_TICKET_PRIORITY_LOW = "منخفضة"
+M_TICKET_PRIORITY_NORMAL = "عادية"
+M_TICKET_PRIORITY_HIGH = "عالية"
+
+
+def render_tickets_list(tickets: list[dict[str, Any]]) -> str:
+    """Render a user's ticket list (open / in_progress shown first)."""
+    lines = ["<b>🎫 تذاكري</b>", ""]
+    if not tickets:
+        lines.append(M_TICKETS_EMPTY)
+        return "\n".join(lines)
+    for t in tickets:
+        glyph = ticket_status_glyph(t["status"])
+        lines.append(
+            f"{glyph} <code>#{t['id']}</code> "
+            f"{ticket_status_label(t['status'])} "
+            f"({ticket_priority_label(t['priority'])}) "
+            f"— {esc(t['subject'])}"
+        )
+    lines.append("")
+    lines.append("استخدم الأزرار للتنقل ↓")
+    return "\n".join(lines)
+
+
+def render_ticket_card(ticket: dict[str, Any]) -> str:
+    """Render a compact ticket summary card (used in admin lists)."""
+    glyph = ticket_status_glyph(ticket["status"])
+    lines = [
+        f"{glyph} <b>🎫 تذكرة #{ticket['id']}</b>",
+        f"›|الموضوع ↼ {esc(ticket['subject'])}",
+        f"›|الحالة ↼ {ticket_status_label(ticket['status'])}",
+        f"›|الأولوية ↼ {ticket_priority_label(ticket['priority'])}",
+        f"›|المالك ↼ <code>{ticket['owner_id']}</code>",
+    ]
+    return "\n".join(lines)
+
+
+def render_ticket_detail(ticket: dict[str, Any], messages: list[dict[str, Any]]) -> str:
+    """Render a full ticket detail with the complete message thread.
+
+    User messages are right-aligned (via a trailing ``↪ <b>أنت</b>`` marker);
+    admin messages are left-aligned (via a leading ``↩`` marker).  The thread
+    is rendered oldest-first."""
+    lines = [
+        f"<b>🎫 تذكرة #{ticket['id']}</b>",
+        f"›|الموضوع ↼ {esc(ticket['subject'])}",
+        f"›|الحالة ↼ {ticket_status_label(ticket['status'])}",
+        f"›|الأولوية ↼ {ticket_priority_label(ticket['priority'])}",
+        "",
+        "――――――――――――――――――――",
+    ]
+    if not messages:
+        lines.append("↢ لا توجد رسائل بعد.")
+        return "\n".join(lines)
+    for msg in messages:
+        body = esc(msg["body"])
+        if msg["sender_role"] == "admin":
+            lines.append(f"↩ {body}")
+        else:
+            lines.append(f"{body} ↪ <b>أنت</b>")
+    lines.append("")
+    lines.append("――――――――――――――――――――")
+    return "\n".join(lines)
+
+
+def render_admin_tickets_list(
+    tickets: list[dict[str, Any]], status_filter: str | None
+) -> str:
+    """Render the admin ticket list with per-row glyphs."""
+    lines = ["<b>🎫 إدارة التذاكر</b>", ""]
+    if not tickets:
+        lines.append("× لا توجد تذاكر بهذه الحالة.")
+        return "\n".join(lines)
+    for t in tickets:
+        glyph = ticket_status_glyph(t["status"])
+        lines.append(
+            f"{glyph} <code>#{t['id']}</code> "
+            f"[{ticket_status_label(t['status'])}] "
+            f"({ticket_priority_label(t['priority'])}) "
+            f"— {esc(t['subject'])} — <code>{t['owner_id']}</code>"
+        )
     lines.append("")
     lines.append("استخدم الأزرار للتنقل ↓")
     return "\n".join(lines)

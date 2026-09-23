@@ -272,6 +272,38 @@ CREATE INDEX idx_notifications_unread ON notifications(owner_id, read_at, dismis
     WHERE read_at IS NULL AND dismissed = 0;
 """
 
+# v11: Support Tickets — a lightweight user-to-admin messaging surface.
+# ``tickets`` owns the thread (owner-scoped: a user sees only their own
+# tickets; admins see all).  ``ticket_messages`` is the append-only thread
+# with ``sender_role`` distinguishing user vs admin messages.  ON DELETE CASCADE
+# on the ticket link removes orphaned messages when a ticket is deleted.
+# All FK columns are portable (RULES §6); plain PRIMARY KEY (no AUTOINCREMENT).
+_V11 = """
+CREATE TABLE tickets (
+    id INTEGER PRIMARY KEY,
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    subject TEXT NOT NULL,
+    priority TEXT NOT NULL DEFAULT 'normal',
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE ticket_messages (
+    id INTEGER PRIMARY KEY,
+    ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+    sender_id INTEGER NOT NULL,
+    sender_role TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_tickets_owner ON tickets(owner_id);
+CREATE INDEX idx_tickets_status ON tickets(status);
+CREATE INDEX idx_ticket_messages_ticket ON ticket_messages(ticket_id);
+CREATE INDEX idx_ticket_messages_ticket_created ON ticket_messages(ticket_id, created_at);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, _V1),
     (2, _V2),
@@ -283,6 +315,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (8, _V8),
     (9, _V9),
     (10, _V10),
+    (11, _V11),
 ]
 
 
